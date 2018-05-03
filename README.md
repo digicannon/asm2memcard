@@ -65,3 +65,4 @@ yourself.  If you were thinking about it, thank you, but for now I'm having fun 
 ## Resources
 * [wParam originally discovered the nametag exploit](http://wparam.com/ssbm/exploit.html)
 * [Smashboards Community Symbol Map](https://smashboards.com/threads/smashboards-community-symbol-map.426763/)
+* [Achilles1515's SSBM Facts](https://raw.githubusercontent.com/Achilles1515/20XX-Melee-Hack-Pack/master/SSBM%20Facts.txt)

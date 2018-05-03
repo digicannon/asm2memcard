@@ -46,7 +46,9 @@
 #define NAME_TAG_ADDR 0x8045D850
 #define NAME_END_ADDR 0x80469B94
 #define NAME_TAG_SIZE 0xC344
+#define CARD_MEM_ADDR 0x8045BF28
 #define CARD_END_ADDR 0x8046B0EC
+#define CARD_MEM_SIZE 0xF1C4
 
 #define USER_ADDR 0x8045D930
 #define INJECTION_ADDR NAME_END_ADDR
@@ -352,6 +354,9 @@ int main(int argc, char ** argv) {
         error(ERR_POINTLESS, 0, 0);
     }
 
+    target = INJECTION_ADDR;
+    POKE(find_lbranch(target, 0x800236DC)); // ; bl Music_Stop
+
     /* The patcher assembly was taken from wParam's POKE patcher.
      * This simply reads the user's addresses and values and puts
      * them where they belong.  It also invalidates the cache
@@ -362,8 +367,7 @@ int main(int argc, char ** argv) {
     // ori r7, r7, lower word of USER_ADDR
     // lis r8, upper word of USER_ADDR + user_codes_next + 1
     // ori r8, r8, lower word of USER_ADDR + user_codes_next + 1
-    target = INJECTION_ADDR;
-    POKE(0x3CE00000 + ((USER_ADDR >> 16) & 0xFFFF));
+    INCPOKE(0x3CE00000 + ((USER_ADDR >> 16) & 0xFFFF));
     INCPOKE(0x60E70000 + (USER_ADDR & 0xFFFF));
     INCPOKE(0x3D000000 + (((USER_ADDR + (user_codes_next + 1) * 4) >> 16) & 0xFFFF));
     INCPOKE(0x61080000 + ((USER_ADDR + (user_codes_next + 1) * 4) & 0xFFFF));
@@ -413,8 +417,13 @@ int main(int argc, char ** argv) {
      */
     INCPOKE(find_lbranch(target, 0x8015f600)); // bl InitializeNametagArea
     INCPOKE(find_lbranch(target, 0x8001CBBC)); // bl DoLoadData
-    INCPOKE(find_lbranch(target, 0x80328F50)); // bl TRK_Flush_Cache
-    INCPOKE(0x38600006); // r3 = 6
+    INCPOKE(0x38600054); // r3 = 54 ; Coin SFX ID
+    INCPOKE(0x388000FE); // r4 = FE ; Max Volume
+    INCPOKE(0x38A00080); // r5 = 80 ; ?, said to usually be 80
+    INCPOKE(0x38C00000); // r6 = 00 ; ?
+    INCPOKE(0x38E00000); // r7 = 00 ; Echo
+    INCPOKE(find_lbranch(target, 0x8038CFF4)); // bl PlaySFX
+    INCPOKE(0x38600000); // r3 = 0 ; Title Screen ID
     INCPOKE(find_lbranch(target, 0x801A428C)); // bl NewMajor
     INCPOKE(find_lbranch(target, 0x801A4B60)); // bl SetGo
     INCPOKE(find_branch(target, 0x80239E9C)); // Back to Melee!
