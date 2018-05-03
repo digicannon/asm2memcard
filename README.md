@@ -7,6 +7,8 @@ Usage:   asm2memcard infile outfile
 Example: asm2memcard masterhand.a2m masterhand.txt
 ```
 
+*This is not stable yet! Please check the [Issues](https://github.com/digicannon/asm2memcard/issues) tab.*
+
 ## Creating a Hacked Memory Card
 First, clear the virtual memory card of any SSBM data.  Then run the game with the AR code enabled.
 Create a new save file when prompted and hit Start on the title screen.  Wait until the saving icon
@@ -53,10 +55,6 @@ A branch back to the original address will be inserted at the end of a branch di
 * Allow input from standard input
 * Allow output to standard output
 * Clean up parser
-
-## Known Bugs
-Using the set directive to alter save data doesn't seem to work.  However, giving the exploit save
-file things like unlocked characters will cary over to the "normal usage" save file.
 
 ## Pull Requests
 Unless it is incredibly important, I'd prefer you just notify me of bugs rather than fix them
