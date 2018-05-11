@@ -23,3 +23,68 @@ addi r14, r14, 0x60
 li r15, 0xZ
 stb r15, 0(r14)
 addi sp, sp, 488
+
+=== Checking button presses ===
+
+According to the SSBM Data Sheet, player 1's digital inputs start at 804C1FAC.
+Bits: -------- UDLRUDLR ---SYXBA -LRZUDRL
+The next player's inputs are offset by 0x44.
+
+I wanted to check if the Start button (byte 3) was pressed on any controller:
+
+lis r14, 0x804C
+lbz r15, 0x1FAE(r14)
+li r14, 0x10
+and r14, r14, r15
+cmpwi r14, 0x10
+bne not_pressed
+; TODO: Other players.
+; Do stuff for when Start is pressed
+
+I can find PowerPC documentation for an "andi" instruction but it looks like the GameCube
+doesn't have it.  So, had to use an extra register to hold the mask for Start.
+
+=== Rumble Toggle ===
+
+flag addr calc:
+r0 = word value at r13 - 0x77c0
+r3 = r3 + r0
+flag = r3 + 0x1cc0
+LoadRumbleFlag stores flag in r3
+StoreRumbleFLag stores r4 in flag
+Warning: putting breakpoints in these procedures causes weirdness & crashes.
+
+r13 = 804db6a0 (constant)
+0 = no rumble, 1 = rumble
+
+So it seems rumble flags (byte 0 or 1) are stored at 8045C380.
+4 bytes for 4 players.
+This seems to be the same address on every run.
+
+So to toggle, let's check if R was just pressed.
+"Just pressed" would mean this frame their is no button press, but there was last frame.
+Luckily, Melee keeps track of the previous frame's inputs.
+
+check_last_frame:
+	lis r14, 0x804C
+	ori r14, r14, 0x1FB3
+	lbz r15, 0(r14)
+	li r16, 0x20
+	and r16, r16, r15
+	cmpwi r16, 0x20
+	bne skip_toggle_p1
+check_this_frame:
+	lbz r15, -4(r14)
+	li r16, 0x20
+	and r16, r16, r15
+	cmpwi r16, 0
+	bne skip_toggle_p1
+toggle_p1:
+	lis r14, 0x8045
+	ori r14, r14, 0xC380
+	lbz r15, 0(r14)
+	not r15, r15
+	li r16, 1
+	and r15, r15, r16
+	stb r15, 0(r14)
+skip_toggle_p1:
