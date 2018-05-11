@@ -57,6 +57,15 @@
 #define ATPOKE(addr, val)  fprintf(out, "04%06X %08X\r\n", addr & 0xFFFFFF, val & 0xFFFFFFFF)
 #define INCPOKE(val)       fprintf(out, "04%06X %08X\r\n", (target += 4) & 0xFFFFFF, val & 0xFFFFFFFF)
 
+const uint32_t forced_asm_banner[] = {
+    0x3DC08111, 0x61CEE613,
+    0x39E0000D, 0x99EE0000,
+    0x39CE0060, 0x39E0000E,
+    0x99EE0000, 0x39CE0060,
+    0x39E0000C, 0x99EE0000,
+    0x382101E8, 0
+};
+
 typedef enum directive {
     D_NONE,
     D_CHANGE,
@@ -136,6 +145,22 @@ uint32_t find_branch(uint32_t from, uint32_t to) {
     } else {
         return 0x60000000; // nop
     }
+}
+
+// Utility procedure to insert branch code after the user's.
+void internal_asm_insert(uint32_t home, uint32_t * target, uint32_t * c) {
+    uint32_t t = *target;
+
+    user_codes_push(home, find_branch(home, t));
+
+    while (*c != 0) {
+	user_codes_push(t, *c++);
+	t += 4;
+    }
+
+    user_codes_push(t, find_branch(t, home + 4));
+    t += 4;
+    *target = t;
 }
 
 // bl instruction instead of b.
@@ -297,6 +322,8 @@ void read_a2m(char * filename) {
             char32 = 0;
         }
     }
+
+    internal_asm_insert(0x80266880, &target, forced_asm_banner);
 
     fclose(src);
 }

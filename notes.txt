@@ -1,0 +1,25 @@
+=== "READY TO FIGHT" color changing ===
+
+Banner ID = 0x1F
+Changing C,D,E changes the color of the banner.
+8111e60c = byte 1F
++      7 = byte 0C
+8111e66c = byte 1F
++      7 = byte 0D
+8111e6cc = byte 1F
++      7 = byte 0E
+
+Not sure where this data is loaded from, but it is overwritten every time CSS is loaded.
+So, hooking in to the end of CSS_LoadFunction, branch at 80266880.  Replace X Y Z with your values.
+
+lis r14, 0x8111
+ori r14, r14, 0xE613
+li r15, 0xX
+stb r15, 0(r14)
+addi r14, r14, 0x60
+li r15, 0xY
+stb r15, 0(r14)
+addi r14, r14, 0x60
+li r15, 0xZ
+stb r15, 0(r14)
+addi sp, sp, 488
