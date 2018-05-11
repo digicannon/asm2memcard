@@ -62,7 +62,7 @@ So it seems rumble flags (byte 0 or 1) are stored at 8045C380.
 This seems to be the same address on every run.
 
 So to toggle, let's check if R was just pressed.
-"Just pressed" would mean this frame their is no button press, but there was last frame.
+"Just pressed" would mean this frame there is no button press, but there was last frame.
 Luckily, Melee keeps track of the previous frame's inputs.
 
 check_last_frame:
