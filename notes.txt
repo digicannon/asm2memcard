@@ -24,6 +24,8 @@ li r15, 0xZ
 stb r15, 0(r14)
 addi sp, sp, 488
 
+TODO: Why did I add 0x60 instead of just changing the offset of r14? Fix that.
+
 === Checking button presses ===
 
 According to the SSBM Data Sheet, player 1's digital inputs start at 804C1FAC.
@@ -65,26 +67,51 @@ So to toggle, let's check if R was just pressed.
 "Just pressed" would mean this frame there is no button press, but there was last frame.
 Luckily, Melee keeps track of the previous frame's inputs.
 
+	li r17, 0
 check_last_frame:
 	lis r14, 0x804C
 	ori r14, r14, 0x1FB3
+	mulli r15, r17, 0x44
+	add r14, r14, r15
 	lbz r15, 0(r14)
 	li r16, 0x20
 	and r16, r16, r15
 	cmpwi r16, 0x20
-	bne skip_toggle_p1
+	bne skip_toggle
 check_this_frame:
 	lbz r15, -4(r14)
 	li r16, 0x20
 	and r16, r16, r15
 	cmpwi r16, 0
-	bne skip_toggle_p1
-toggle_p1:
+	bne skip_toggle
+toggle:
 	lis r14, 0x8045
 	ori r14, r14, 0xC380
+	add r14, r14, r17
 	lbz r15, 0(r14)
 	not r15, r15
 	li r16, 1
 	and r15, r15, r16
 	stb r15, 0(r14)
-skip_toggle_p1:
+skip_toggle:
+	addi r17, r17, 1
+	cmpwi r17, 4
+	blt check_last_frame
+
+Future usage?:
+MakeControllerRumble is called (if a controller has rumble on) when going from CSS to SSS.
+It makes the call with the following values:
+r3 = 0/1/2/3 (player ID)
+r4 = 0
+r5 = 0x1E
+r6 = 5
+r7 = might be an argument?
+
+=== Player name color on CSS ===
+
+Format: RRGGBB
+P1: 80bd5d56
+P2: 80bd6206
+P3: 80bd66b6
+P4: 80bd6b66
+Offset is 0x4B0
