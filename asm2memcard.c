@@ -280,6 +280,7 @@ void read_a2m(char * filename) {
                         user_codes_push(home, value);
                         dir_code = D_NONE;
                     }
+		    value = 0;
                 }
 
                 if (next == '@') dir_code = D_CHANGE;
