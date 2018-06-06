@@ -43,6 +43,7 @@
 #define GARBAGE_VALUE 0x8BADF00D
 #define FREE_MEM_ADDR 0x80001800
 #define FREE_END_ADDR 0x80002FFF
+#define FREE_MEM_SIZE 0x17FF
 #define NAME_TAG_ADDR 0x8045D850
 #define NAME_END_ADDR 0x80469B94
 #define NAME_TAG_SIZE 0xC344
@@ -52,10 +53,6 @@
 
 #define USER_ADDR 0x8045D930
 #define INJECTION_ADDR NAME_END_ADDR
-
-#define POKE(val)          fprintf(out, "04%06X %08X\r\n", target & 0xFFFFFF, val & 0xFFFFFFFF)
-#define ATPOKE(addr, val)  fprintf(out, "04%06X %08X\r\n", addr & 0xFFFFFF, val & 0xFFFFFFFF)
-#define INCPOKE(val)       fprintf(out, "04%06X %08X\r\n", (target += 4) & 0xFFFFFF, val & 0xFFFFFFFF)
 
 const uint32_t forced_asm_banner[] = {
     0x3DC08111, 0x61CEE613,
@@ -74,6 +71,13 @@ typedef enum directive {
     D_TITLE
 } directive;
 
+typedef struct dir_data {
+    uint32_t target;
+    uint32_t home;
+    uint32_t value;
+} dir_data;
+
+// NOTE: Dir len should be longer than any possible length.
 #define DIRECTIVE_STR_LEN 8
 #define SAVE_COMMENT_LEN 12
 
@@ -82,6 +86,9 @@ uint32_t * user_codes_addr;
 uint32_t * user_codes_val;
 size_t user_codes_len = USER_CODES_INIT_LEN;
 size_t user_codes_next = 0;
+
+unsigned char save_comment[SAVE_COMMENT_LEN] = {0};
+int save_comment_next = 0;
 
 void error(int code, unsigned long line, const char * info) {
     if (line > 0) printf("ERR%d on line %d: ", code, line);
@@ -148,7 +155,7 @@ uint32_t find_branch(uint32_t from, uint32_t to) {
 }
 
 // Utility procedure to insert branch code after the user's.
-void internal_asm_insert(uint32_t home, uint32_t * target, uint32_t * c) {
+void internal_asm_insert(uint32_t home, uint32_t * target, const uint32_t * c) {
     uint32_t t = *target;
 
     user_codes_push(home, find_branch(home, t));
@@ -167,48 +174,87 @@ void internal_asm_insert(uint32_t home, uint32_t * target, uint32_t * c) {
 // Used for procedure calls.
 #define find_lbranch(from, to) (find_branch(from, to) + 1)
 
-#define hex_strtoi() {                                                  \
-    value = value << 4;                                                 \
-    if (next >= '0' && next <= '9') value += next - '0';                \
-    else if (next >= 'A' && next <= 'F') value += 10 + next - 'A';      \
-    else if (next >= 'a' && next <= 'f') value += 10 + next - 'a';      \
-    else error(ERR_MALFORMED_ADDR, line, 0);                            \
+// Handles hex values in user's script.
+void a2m_feed_val(directive * did, dir_data * dat) {
+    switch (*did) {
+    case D_BRANCH:
+	if (dat->home == 0) {
+	    dat->home = 0x80000000 + dat->value;
+	    user_codes_push(dat->home, find_branch(dat->home, dat->target));
+	} else {
+	    user_codes_push(dat->target, dat->value);
+	    dat->target += 4;
+	}
+	break;
+    case D_SET:
+	if (dat->home == 0) {
+	    dat->home = 0x80000000 + dat->value;
+	} else {
+	    user_codes_push(dat->home, dat->value);
+	    *did = D_NONE;
+	}
+	break;
+    }
 }
 
+// Initialize all data pertaining to the current directive.
+void a2m_start_dir(directive did, dir_data * dat) {
+    dat->home = 0;
+    dat->value = 0;
+    
+    switch (did) {
+    case D_TITLE:
+	memset(save_comment, 0, sizeof(save_comment));
+	save_comment_next = 0;
+	break;
+    }
+}
+
+// De-init all data pertaining to the current directive
+// and write any data necessary for its end.
+void a2m_end_dir(directive * did, dir_data * dat) {
+    switch (*did) {
+    case D_BRANCH:
+	user_codes_push(dat->target, find_branch(dat->target, dat->home + 4));
+	dat->target += 4;
+	break;
+    }
+}
+
+// Main script reading procedure.
+// Not quite thread-safe yet!
 void read_a2m(char * filename) {
+    // Parsing data:
     FILE * src;
     unsigned long line = 1;
     unsigned char next, last;
     size_t readc = 0;
     bool in_rem = false;
+    bool next_is_space;
 
-    directive dir_code = D_NONE;
+    // Directive data:
+    directive did = D_NONE;
+    dir_data dat = {FREE_MEM_ADDR, 0, 0};
     unsigned char dir_str[DIRECTIVE_STR_LEN] = {0};
     int dir_str_i = 0;
 
-    unsigned char save_comment[SAVE_COMMENT_LEN] = {0};
-    int save_comment_next = 0;
-
-    uint32_t target = FREE_MEM_ADDR;
-    uint32_t home   = 0;
-    uint32_t value  = 0;
-        
     src = fopen(filename, "rb");
     if (!src) error(ERR_FILE_IN, 0, filename);
 
-    // NOTE: EOF is used as null-terminator.
-    // CLEANUP: This method of parsing is kind of gross.
-    // CLEANUP: Some repetition remains.
     do {
+	// If at EOF, treat as null-terminator.
         readc = fread(&next, 1, 1, src);
         if (readc == 0) next = 0;
         else if (readc != 1) break;
+	next_is_space = isspace(next);
 
+	// Check if comment has started.
         if (next == ';') {
             in_rem = true;
             continue;
         }
 
+	// Check if comment has ended.
         if (in_rem) {
             if (next == '\n') {
                 in_rem = false;
@@ -216,84 +262,54 @@ void read_a2m(char * filename) {
             }
             continue;
         }
-        
-        switch (dir_code) {
+
+	// Check for the start of a new directive & end the current one.
+	// End-of-file will be handled as if the directive is being changed.
+	if (next == '@' || next == 0) {
+	    if (!isspace(last)) a2m_feed_val(&did, &dat);
+	    a2m_end_dir(&did, &dat);
+	    did = D_CHANGE;
+	    continue;
+	}
+
+	// Now handle character on a per-directive basis.
+
+        switch (did) {
         case D_NONE:
-            if (next == '@') dir_code = D_CHANGE;
-            else if (!isspace(next)) error(ERR_DIRECTIVE_BAD, line, 0);
-            break;
-        case D_CHANGE:
+	    // The only thing right now should be a directive change.
+	    // If the script says something else, it's gone bad.
+	    if (!isspace(next)) error(ERR_DIRECTIVE_BAD, line, 0);
+	    break;
+	case D_CHANGE:
+	    // At a space, the directive string has ended.
+	    // Or, if the directive has become longer than expected,
+	    // end it and it will match as unknown.
             if (isspace(next) || dir_str_i >= (DIRECTIVE_STR_LEN - 1)) {
                 // Convert to lowercase for easier matching.
                 for (char * c = dir_str; *c; ++c) *c = tolower(*c);
-                
-                if (strcmp(dir_str, "branch") == 0) {
-                    dir_code = D_BRANCH;
-                    home = 0;
-                } else if (strcmp(dir_str, "set") == 0) {
-                    dir_code = D_SET;
-                    home = 0;
-                } else if (strcmp(dir_str, "title") == 0) {
-                    dir_code = D_TITLE;
-                    memset(save_comment, 0, sizeof(save_comment));
-                    save_comment_next = 0;
-                } else error(ERR_DIRECTIVE_UNKNOWN, line, dir_str);
 
-                memset(dir_str, 0, sizeof(dir_str));
-                dir_str_i = 0;
-            } else {
+		// Match string with directive ID.
+
+		if (strcmp(dir_str, "branch") == 0)     did = D_BRANCH;
+		else if (strcmp(dir_str, "set") == 0)   did = D_SET;
+		else if (strcmp(dir_str, "title") == 0) did = D_TITLE;
+		else error(ERR_DIRECTIVE_UNKNOWN, line, dir_str);
+
+		a2m_start_dir(did, &dat);
+
+		// Clear string data for next directive change.
+		memset(dir_str, 0, sizeof(dir_str));
+		dir_str_i = 0;
+	    } else {
                 dir_str[dir_str_i++] = next;
             }
 
             break;
-        case D_BRANCH:
-            if (isspace(next) || next == '@' || next == 0) {
-                // Token completed. If home = 0, home is being defined.
-                // Otherwise, add an instruction.
-                if (!isspace(last)) {
-                    if (home == 0) {
-                        home = 0x80000000 + value;
-                        user_codes_push(home, find_branch(home, target));
-                    } else {
-                        user_codes_push(target, value);
-                        target += 4;
-                    }
-                    value = 0;
-                }
-            } else {
-                hex_strtoi();
-            }
-
-            if (next == '@' || next == 0) {
-                user_codes_push(target, find_branch(target, home + 4));
-                target += 4;
-                dir_code = D_CHANGE;
-            }
-
-            break;
-        case D_SET:
-            if (isspace(next) || next == '@' || next == 0) {
-                // Similar to branch, the token is complete.
-                if (!isspace(last)) {
-                    if (home == 0) home = value;
-                    else {
-                        user_codes_push(home, value);
-                        dir_code = D_NONE;
-                    }
-		    value = 0;
-                }
-
-                if (next == '@') dir_code = D_CHANGE;
-            } else {
-                hex_strtoi();
-            }
-
-            break;
         case D_TITLE:
+	    // If end-of-line, the title is complete. Otherwise add character to title.
+
             if (next == '\n' || next == '\r') {
-                dir_code = D_NONE;
-            } else if (next == '@') {
-                dir_code = D_CHANGE;
+                did = D_NONE;
             } else if (next != 0) {
                 // Subtract 1 to save room for null-terminator.
                 if (save_comment_next >= SAVE_COMMENT_LEN - 1) error(ERR_TITLE_LEN, line, 0);
@@ -301,13 +317,31 @@ void read_a2m(char * filename) {
             }
 
             break;
-        }
+	default:
+	    // At this point, we must be reading hex values.
+
+	    if (next_is_space) {
+		// Feed directive completed value, as long as there is a value.
+		// If we just had space, there is no value.
+		if (!isspace(last)) {
+		    a2m_feed_val(&did, &dat);
+		    dat.value = 0;
+		}
+	    } else {
+		// Convert hex string to uint32.
+		dat.value = dat.value << 4;
+		if (next >= '0' && next <= '9') dat.value += next - '0';
+		else if (next >= 'A' && next <= 'F') dat.value += 10 + next - 'A';
+		else if (next >= 'a' && next <= 'f') dat.value += 10 + next - 'a';
+		else error(ERR_MALFORMED_ADDR, line, 0);
+	    }
+	}
 
         last = next;
         if (next == '\n') ++line;
     } while (readc == 1);
 
-    if (target >= FREE_END_ADDR) {
+    if (dat.target >= FREE_END_ADDR) {
         printf("WARNING: Codes are too large! Had to write beyond free memory area!\n");
     }
 
@@ -324,10 +358,14 @@ void read_a2m(char * filename) {
         }
     }
 
-    internal_asm_insert(0x80266880, &target, forced_asm_banner);
+    internal_asm_insert(0x80266880, &dat.target, forced_asm_banner);
 
     fclose(src);
 }
+
+#define POKE(val)          fprintf(out, "04%06X %08X\r\n", target & 0xFFFFFF, val & 0xFFFFFFFF)
+#define ATPOKE(addr, val)  fprintf(out, "04%06X %08X\r\n", addr & 0xFFFFFF, val & 0xFFFFFFFF)
+#define INCPOKE(val)       fprintf(out, "04%06X %08X\r\n", (target += 4) & 0xFFFFFF, val & 0xFFFFFFFF)
 
 // TODO: Allow usage of standard input / output.
 int main(int argc, char ** argv) {
@@ -384,6 +422,20 @@ int main(int argc, char ** argv) {
 
     target = INJECTION_ADDR;
     POKE(find_lbranch(target, 0x800236DC)); // ; bl Music_Stop
+    
+    // Just in case any user code uses the free memory area, I zero it out here.
+    // lis r3, upper word of FREE_MEM_ADDDR
+    // ori r3, r3, lower word of FREE_MEM_ADDR
+    // li r4, 0
+    // lis r5, upper word of FREE_MEM_SIZE
+    // ori r5, r5, lower word of FREE_MEM_SIZE
+    // bl memset
+    INCPOKE(0x3C600000 + ((FREE_MEM_ADDR >> 16) & 0xFFFF));
+    INCPOKE(0x60630000 + (FREE_MEM_ADDR & 0xFFFF));
+    INCPOKE(0x38800000);
+    INCPOKE(0x3CA00000 + ((FREE_MEM_SIZE >> 16) & 0xFFFF));
+    INCPOKE(0x60A50000 + (FREE_MEM_SIZE & 0xFFFF));
+    INCPOKE(find_lbranch(target, 0x80003130));
 
     /* The patcher assembly was taken from wParam's POKE patcher.
      * This simply reads the user's addresses and values and puts
@@ -445,13 +497,13 @@ int main(int argc, char ** argv) {
      */
     INCPOKE(find_lbranch(target, 0x8015f600)); // bl InitializeNametagArea
     INCPOKE(find_lbranch(target, 0x8001CBBC)); // bl DoLoadData
-    INCPOKE(0x38600054); // r3 = 54 ; Coin SFX ID
-    INCPOKE(0x388000FE); // r4 = FE ; Max Volume
-    INCPOKE(0x38A00080); // r5 = 80 ; ?, said to usually be 80
-    INCPOKE(0x38C00000); // r6 = 00 ; ?
-    INCPOKE(0x38E00000); // r7 = 00 ; Echo
+    INCPOKE(0x38600054); // li r3, 54 ; Coin SFX ID
+    INCPOKE(0x388000FE); // li r4, FE ; Max Volume
+    INCPOKE(0x38A00080); // li r5, 80 ; ?, said to usually be 80
+    INCPOKE(0x38C00000); // li r6, 00 ; ?
+    INCPOKE(0x38E00000); // li r7, 00 ; Echo
     INCPOKE(find_lbranch(target, 0x8038CFF4)); // bl PlaySFX
-    INCPOKE(0x38600000); // r3 = 0 ; Title Screen ID
+    INCPOKE(0x38600000); // li r4, 0 ; Title Screen ID
     INCPOKE(find_lbranch(target, 0x801A428C)); // bl NewMajor
     INCPOKE(find_lbranch(target, 0x801A4B60)); // bl SetGo
     INCPOKE(find_branch(target, 0x80239E9C)); // Back to Melee!
