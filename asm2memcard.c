@@ -423,20 +423,6 @@ int main(int argc, char ** argv) {
     target = INJECTION_ADDR;
     POKE(find_lbranch(target, 0x800236DC)); // ; bl Music_Stop
     
-    // Just in case any user code uses the free memory area, I zero it out here.
-    // lis r3, upper word of FREE_MEM_ADDDR
-    // ori r3, r3, lower word of FREE_MEM_ADDR
-    // li r4, 0
-    // lis r5, upper word of FREE_MEM_SIZE
-    // ori r5, r5, lower word of FREE_MEM_SIZE
-    // bl memset
-    INCPOKE(0x3C600000 + ((FREE_MEM_ADDR >> 16) & 0xFFFF));
-    INCPOKE(0x60630000 + (FREE_MEM_ADDR & 0xFFFF));
-    INCPOKE(0x38800000);
-    INCPOKE(0x3CA00000 + ((FREE_MEM_SIZE >> 16) & 0xFFFF));
-    INCPOKE(0x60A50000 + (FREE_MEM_SIZE & 0xFFFF));
-    INCPOKE(find_lbranch(target, 0x80003130));
-
     /* The patcher assembly was taken from wParam's POKE patcher.
      * This simply reads the user's addresses and values and puts
      * them where they belong.  It also invalidates the cache
