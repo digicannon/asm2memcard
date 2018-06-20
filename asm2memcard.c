@@ -52,7 +52,8 @@
 #define CARD_MEM_SIZE 0xF1C4
 
 #define USER_ADDR 0x8045D930
-#define INJECTION_ADDR NAME_END_ADDR
+#define INJECTION_SIZE 0x200 // More than enough to fit the launcher.
+#define INJECTION_ADDR (CARD_END_ADDR - INJECTION_SIZE)
 
 const uint32_t forced_asm_banner[] = {
     0x3DC08111, 0x61CEE613,
@@ -345,6 +346,8 @@ void read_a2m(char * filename) {
         printf("WARNING: Codes are too large! Had to write beyond free memory area!\n");
     }
 
+    internal_asm_insert(0x80266880, &dat.target, forced_asm_banner);
+
     // Convert save title string to groups of uint32.
     uint32_t char32 = 0;
     for (int i = 0; i < SAVE_COMMENT_LEN; ++i) {
@@ -353,12 +356,15 @@ void read_a2m(char * filename) {
         if ((i + 1) % 4 == 0) {
             user_codes_push(0x803BAC3C + i - 3, char32);
             user_codes_push(0x803BAC5C + i - 3, char32);
-            user_codes_push(0x804330D8 + i - 3, char32);
             char32 = 0;
         }
     }
 
-    internal_asm_insert(0x80266880, &dat.target, forced_asm_banner);
+    // The above wrote to filename data at 803BAC5C, 60, and 64.
+    // Zero out the rest!
+    user_codes_push(0x803BAC68, 0);
+    user_codes_push(0x803BAC6C, 0);
+    user_codes_push(0x803BAC70, 0);
 
     fclose(src);
 }
@@ -393,8 +399,9 @@ int main(int argc, char ** argv) {
     read_a2m(argv[1]);
 
     // Fill nametag data with D4 bytes of garbage to start overflow.
+    // Note: 0x35 is 0xD4 / 4
     target = NAME_TAG_ADDR;
-    for (int i = 0; i <= 0xD4; ++i) {
+    for (int i = 0; i <= 0x35; ++i) {
         POKE(GARBAGE_VALUE);
         target += 4;
     }
@@ -481,7 +488,7 @@ int main(int argc, char ** argv) {
      * like to create one.  This save file will NOT include the
      * nametag overflow & should allow nametags to work normally.
      */
-    INCPOKE(find_lbranch(target, 0x8015f600)); // bl InitializeNametagArea
+    INCPOKE(find_lbranch(target, 0x8015F600)); // bl InitializeNametagArea
     INCPOKE(find_lbranch(target, 0x8001CBBC)); // bl DoLoadData
     INCPOKE(0x38600054); // li r3, 54 ; Coin SFX ID
     INCPOKE(0x388000FE); // li r4, FE ; Max Volume
@@ -489,7 +496,7 @@ int main(int argc, char ** argv) {
     INCPOKE(0x38C00000); // li r6, 00 ; ?
     INCPOKE(0x38E00000); // li r7, 00 ; Echo
     INCPOKE(find_lbranch(target, 0x8038CFF4)); // bl PlaySFX
-    INCPOKE(0x38600000); // li r4, 0 ; Title Screen ID
+    INCPOKE(0x38600000); // li r3, 0 ; Title Screen ID
     INCPOKE(find_lbranch(target, 0x801A428C)); // bl NewMajor
     INCPOKE(find_lbranch(target, 0x801A4B60)); // bl SetGo
     INCPOKE(find_branch(target, 0x80239E9C)); // Back to Melee!
