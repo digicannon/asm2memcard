@@ -55,15 +55,6 @@
 #define INJECTION_SIZE 0x200 // More than enough to fit the launcher.
 #define INJECTION_ADDR (CARD_END_ADDR - INJECTION_SIZE)
 
-const uint32_t forced_asm_banner[] = {
-    0x3DC08111, 0x61CEE613,
-    0x39E0000D, 0x99EE0000,
-    0x39CE0060, 0x39E0000E,
-    0x99EE0000, 0x39CE0060,
-    0x39E0000C, 0x99EE0000,
-    0x382101E8, 0
-};
-
 typedef enum directive {
     D_NONE,
     D_CHANGE,
@@ -346,8 +337,6 @@ void read_a2m(char * filename) {
         printf("WARNING: Codes are too large! Had to write beyond free memory area!\n");
     }
 
-    internal_asm_insert(0x80266880, &dat.target, forced_asm_banner);
-
     // Convert save title string to groups of uint32.
     uint32_t char32 = 0;
     for (int i = 0; i < SAVE_COMMENT_LEN; ++i) {
@@ -409,6 +398,10 @@ int main(int argc, char ** argv) {
     ATPOKE(0x45D928, INJECTION_ADDR);
     ATPOKE(0x45D92C, 0);
 
+    // Remove memcard wait @ CheckToSaveData.
+    // See "Waiting for SaveData" in notes.
+    user_codes_push(0x8001CDA0, 0xBB010010);
+
     if (user_codes_next > 0) {
         // Insert all poked addresses, then a 0, then the corresponding values.
         
@@ -427,8 +420,48 @@ int main(int argc, char ** argv) {
         error(ERR_POINTLESS, 0, 0);
     }
 
+    /* See "Waiting for SaveData" in notes.
+     * Insert a branch at the end of MemCard_CheckToSaveData to
+     * check if the memcard is ready to be wrote to.
+     * If it is, start loading.
+     * This prevents crashing from changing the save file name
+     * during autosave.  Usually happens on slow memcards.
+     */
+
     target = INJECTION_ADDR;
-    POKE(find_lbranch(target, 0x800236DC)); // ; bl Music_Stop
+    POKE(0x38600054);    // li r3, 0x54 ; Coin SFX ID
+    INCPOKE(0x388000FE); // li r4, 0xFE ; Max Volume
+    INCPOKE(0x38A00080); // li r5, 0x80 ; ?, said to usually be 80
+    INCPOKE(0x38C00000); // li r6, 0    ; ?
+    INCPOKE(0x38E00000); // li r7, 0    ; Echo
+    INCPOKE(find_lbranch(target, 0x8038CFF4)); // bl PlaySFX
+    INCPOKE(0x3C608001); // lis r3, 0x8001
+    INCPOKE(0x6063CDA0); // ori r3, r3, 0xCDA0
+    uint32_t opcode_branch_check = find_branch(0x8001CDA0, target + 36);
+    INCPOKE(0x3C800000 + ((opcode_branch_check >> 16) & 0xFFFF));
+    INCPOKE(0x60840000 + (opcode_branch_check & 0xFFFF));
+    INCPOKE(0x90830000); // stw r4, 0(r3)
+    INCPOKE(0x7C0018AC); // dcbf r0, r3
+    INCPOKE(0x7C001FAC); // icbi r0, r3
+    INCPOKE(0x7C0004AC); // sync
+    INCPOKE(0x4C00012C); // isync
+    INCPOKE(find_branch(target, 0x80239E9C)); // Back to Melee!
+
+    // Check if memcard is ready.
+    INCPOKE(0x81DB0000); // lwz r14, 0(r27)
+    INCPOKE(0x2C0E0001); // cmpwi r14, 1
+    INCPOKE(0x41820008); // beq done
+    INCPOKE(0x48000019); // bl begin
+    INCPOKE(0xBB010010); // lmw r24, 0x0010(sp)
+    INCPOKE(0x3DC08001); // lis r14, 0x8001
+    INCPOKE(0x61CECDA4); // ori r14, r14, 0xCDA4
+    INCPOKE(0x7DC903A6); // mtctr r14
+    INCPOKE(0x4E800420); // bctr ; Return to CheckToSaveData
+    
+    // Memcard is ready.  Begin loading!
+    INCPOKE(0x7C0802A6); // mflr r0
+    INCPOKE(0x9401FFFC); // stwu r0, -4(sp)
+    INCPOKE(find_lbranch(target, 0x800236DC)); // bl Music_Stop
     
     /* The patcher assembly was taken from wParam's POKE patcher.
      * This simply reads the user's addresses and values and puts
@@ -490,16 +523,20 @@ int main(int argc, char ** argv) {
      */
     INCPOKE(find_lbranch(target, 0x8015F600)); // bl InitializeNametagArea
     INCPOKE(find_lbranch(target, 0x8001CBBC)); // bl DoLoadData
-    INCPOKE(0x38600054); // li r3, 54 ; Coin SFX ID
-    INCPOKE(0x388000FE); // li r4, FE ; Max Volume
-    INCPOKE(0x38A00080); // li r5, 80 ; ?, said to usually be 80
-    INCPOKE(0x38C00000); // li r6, 00 ; ?
-    INCPOKE(0x38E00000); // li r7, 00 ; Echo
+    INCPOKE(0x38600054); // li r3, 0x54 ; Coin SFX ID
+    INCPOKE(0x388000FE); // li r4, 0xFE ; Max Volume
+    INCPOKE(0x38A00080); // li r5, 0x80 ; ?, said to usually be 80
+    INCPOKE(0x38C00000); // li r6, 0    ; ?
+    INCPOKE(0x38E00000); // li r7, 0    ; Echo
     INCPOKE(find_lbranch(target, 0x8038CFF4)); // bl PlaySFX
     INCPOKE(0x38600000); // li r3, 0 ; Title Screen ID
     INCPOKE(find_lbranch(target, 0x801A428C)); // bl NewMajor
     INCPOKE(find_lbranch(target, 0x801A4B60)); // bl SetGo
-    INCPOKE(find_branch(target, 0x80239E9C)); // Back to Melee!
+
+    INCPOKE(0x80010000); // lwz r0, 0(sp)
+    INCPOKE(0x38210004); // addi sp, sp, 4
+    INCPOKE(0x7C0803A6); // mtlr r0
+    INCPOKE(0x4E800020); // blr
 
     return 0;
 }

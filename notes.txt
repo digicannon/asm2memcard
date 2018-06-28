@@ -1,3 +1,9 @@
+=== Quick stuff about the architecture ==
+
+ 8bit = "byte"
+16bit = "halfword"
+32bit = "word"
+
 === "READY TO FIGHT" color changing ===
 
 Banner ID = 0x1F
@@ -16,15 +22,17 @@ lis r14, 0x8111
 ori r14, r14, 0xE613
 li r15, 0xX
 stb r15, 0(r14)
-addi r14, r14, 0x60
 li r15, 0xY
-stb r15, 0(r14)
-addi r14, r14, 0x60
+stb r15, 0x60(r14)
 li r15, 0xZ
-stb r15, 0(r14)
+stb r15, 0xC0(r14)
 addi sp, sp, 488
 
-TODO: Why did I add 0x60 instead of just changing the offset of r14? Fix that.
+WARN: If a minor menu is loaded, the address changes.  811E60C could store the colors
+of other CSS elements, but I have not seen any other changes.
+
+In general, changing the banner color should be avoided, at least until the
+source address is discovered.
 
 === Checking button presses ===
 
@@ -115,3 +123,64 @@ P2: 80bd6206
 P3: 80bd66b6
 P4: 80bd6b66
 Offset is 0x4B0
+
+=== Waiting for SaveData to complete ===
+
+Every frame the "Saving.." texture is displayed, MemoryCard_SaveData_CopyData is called.
+Or I should say the opposite, but you get the idea.
+
+MemoryCard_CheckToSaveData makes the call at 8001CD64, which it jumps to if the value in
+r27 is 1.  r27 looks to be address 80433328.  Set to 0 at 8001CD84.
+Confirmed on multiple runs.  80433328 is a global word set to 1 while saving.
+
+Branch from the end of CheckToSaveData.  If the flag is 0, load the hack.
+
+@branch  8001CDA0
+	lwz r14, 0(r27)
+	cmpwi r14, 1
+	beq done
+save_complete:
+	bl begin
+done:
+	lmw r24, 0x0010(sp) # Default code line. (BB010010)
+	lis r14, 0x8001
+	ori r14, r14, 0xCDA4
+	mtctr r14
+	bctr
+begin:
+
+This will need its own loader to boot.
+
+	lis r3, 0x8001
+	ori r3, r3, 0xCDA0
+	lis r4, 0xFFFF # Upper word of opcode to branch to 32 bytes down.
+	ori r4, r4, 0xEEEE # Lower word of opcode.
+	stw r4, 0(r3)
+	dcbf r0, r3
+	icbi r0, r3
+	sync
+	isync
+	# Branch back to Melee here.
+
+After true load, we don't want CheckToSaveData running that again.
+Force inject to user codes: @set 01CDA0 BB010010
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
