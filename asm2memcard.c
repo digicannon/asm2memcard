@@ -460,7 +460,8 @@ int main(int argc, char ** argv) {
     
     // Memcard is ready.  Begin loading!
     INCPOKE(0x7C0802A6); // mflr r0
-    INCPOKE(0x9401FFFC); // stwu r0, -4(sp)
+    INCPOKE(0x90010004); // stw r0, 4(sp)
+    INCPOKE(0x9421FFF8); // stwu sp, -8(sp)
     INCPOKE(find_lbranch(target, 0x800236DC)); // bl Music_Stop
     
     /* The patcher assembly was taken from wParam's POKE patcher.
@@ -533,8 +534,8 @@ int main(int argc, char ** argv) {
     INCPOKE(find_lbranch(target, 0x801A428C)); // bl NewMajor
     INCPOKE(find_lbranch(target, 0x801A4B60)); // bl SetGo
 
-    INCPOKE(0x80010000); // lwz r0, 0(sp)
-    INCPOKE(0x38210004); // addi sp, sp, 4
+    INCPOKE(0x8001000C); // lwz r0, 0xC(sp)
+    INCPOKE(0x38210008); // addi sp, sp, 8
     INCPOKE(0x7C0803A6); // mtlr r0
     INCPOKE(0x4E800020); // blr
 
