@@ -49,10 +49,6 @@ A branch back to the original address will be inserted at the end of a branch di
 00000000
 ```
 
-## Pull Requests
-Unless it is incredibly important, I'd prefer you just notify me of bugs rather than fix them
-yourself.  If you were thinking about it, thank you, but for now I'm having fun writing this myself.
-
 ## Resources
 * [wParam originally discovered the nametag exploit](http://wparam.com/ssbm/exploit.html)
 * [Smashboards Community Symbol Map](https://smashboards.com/threads/smashboards-community-symbol-map.426763/)
