@@ -370,7 +370,8 @@ int main(int argc, char ** argv) {
                 "The output should be used as an AR code in Dolphin.\n"
                 "Run Melee with the code enabled and allow the game\n"
                 "to save. The emulated memory card will have a save\n"
-                "file that loads your codes.\n",
+                "file that loads your codes.\n\n"
+                "See the README for details.\n",
                 argv[0], argv[0]);
         return -1;
     }
