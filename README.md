@@ -14,6 +14,11 @@ in the top right corner of the main menu goes away, then stop Dolphin.  Disable 
 Congratulations!  You can now use Dolphin's memory card management tool to export a GCI file of your
 mod!  Use a homebrew application such as GCMM to get this onto a real memory card.
 
+## Testing Codes
+If you are just testing your codes, disable the virtual memory card.
+This way you'll be able to use the output AR code to load name entry and test your codes
+without the above memory card process.
+
 ## Syntax
 Comments begin with `;` and end after a newline.  
 Directives begin with `@`.  
