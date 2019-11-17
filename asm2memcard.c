@@ -355,8 +355,8 @@ void read_a2m(char * filename) {
     fclose(src);
 }
 
-#define POKE(val)          fprintf(out, "04%06X %08X\r\n", target & 0xFFFFFF, val & 0xFFFFFFFF)
-#define ATPOKE(addr, val)  fprintf(out, "04%06X %08X\r\n", addr & 0xFFFFFF, val & 0xFFFFFFFF)
+#define POKE(val)          fprintf(out, "04%06X %08X\r\n", target & 0xFFFFFF, (val) & 0xFFFFFFFF)
+#define ATPOKE(addr, val)  fprintf(out, "04%06X %08X\r\n", (addr) & 0xFFFFFF, (val) & 0xFFFFFFFF)
 #define INCPOKE(val)       { target += 4; POKE(val); }
 
 // TODO: Allow usage of standard input / output.
