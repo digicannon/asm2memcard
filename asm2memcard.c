@@ -1,6 +1,6 @@
 /* MIT License
  *
- * Copyright (c) 2018 Noah Greenberg
+ * Copyright (c) 2021 Noah Greenberg
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,11 +24,25 @@
  */
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+// @TODO
+#else
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+#define EXEC_AS      "powerpc-eabi-as"
+#define EXEC_OBJCOPY "powerpc-eabi-objcopy"
+
+#define KEYCHAR_REM_START '#'
+#define KEYCHAR_REM_MULTI '*'
 
 #define ERR_NONE 0
 #define ERR_FILE_IN  1
@@ -55,18 +69,39 @@
 #define INJECTION_SIZE 0x200 // More than enough to fit the launcher.
 #define INJECTION_ADDR (CARD_END_ADDR - INJECTION_SIZE)
 
+typedef enum {
+    REM_FALSE = 0,
+    REM_TRUE  = 1,
+    REM_MULTI,
+    REM_MULTI_END, // Was MULTI but just got first semicolon.
+    REM_NEW, // Was FALSE but current character turned to TRUE.
+    REM_MAX // DO NOT USE.
+} Comment_Mode;
+
 typedef enum directive {
     D_NONE,
     D_CHANGE,
     D_BRANCH,
+    D_ASM,
+    D_FILE,
     D_SET,
-    D_TITLE
+    D_TITLE,
+    D_INCLUDE,
+    D_MAX // DO NOT USE.
 } directive;
 
 typedef struct dir_data {
     uint32_t target;
     uint32_t home;
     uint32_t value;
+
+    int asm_pipe[2];
+    pid_t asm_pid;
+    char * asm_out;
+
+    char * asm_in;
+    size_t asm_in_idx;
+    size_t asm_in_size;
 } dir_data;
 
 // NOTE: Dir len should be longer than any possible length.
@@ -79,8 +114,136 @@ uint32_t * user_codes_val;
 size_t user_codes_len = USER_CODES_INIT_LEN;
 size_t user_codes_next = 0;
 
-unsigned char save_comment[SAVE_COMMENT_LEN] = {0};
+unsigned char save_comment[SAVE_COMMENT_LEN];
 int save_comment_next = 0;
+
+const char * dolphin_ini_original_path;
+static FILE * dolphin_ini_original;
+const char * dolphin_ini_temp_path;
+
+#ifdef DEBUG
+void dbg_print_with_dir_color(unsigned long line, char c, directive did, Comment_Mode rem) {
+    if (c == 0) {
+        printf("\033[0m\n");
+        return;
+    }
+
+    if (did == D_NONE) {
+        printf("\033[0m");
+    } else {
+        printf("\033[%dm", 30 + (int)did);
+    }
+
+    if (rem) {
+        //printf("\033[7;%dm", 30 + (int)rem);
+        printf("\033[%dm", 40 + (int)rem);
+    }
+
+    if (c == '\n') {
+        if (line != 1) printf("\u21B5");
+        printf("\033[0m\n\033[47;30m%lu\033[0m\t", line);
+    } else {
+        printf("%c\033[0m", c);
+    }
+}
+
+void dbg_print_key(const char * name, directive did, Comment_Mode rem) {
+    for (const char * c = name; *c; ++c) {
+        dbg_print_with_dir_color(-1, *c, did, rem);
+    }
+    putchar(' ');
+}
+#else
+#define dbg_print_with_dir_color(line, c, did, rem)
+#define dbg_print_key(name, did, rem)
+#endif
+
+FILE * dolphin_ini_seek(const char * in_path) {
+    const size_t in_path_len = strlen(in_path);
+    const size_t out_path_len = in_path_len + 4; // .tmp
+    char * out_path;
+    FILE * in = fopen(in_path, "r");
+    FILE * out;
+    char buff[80];
+
+    if (!in) {
+        // @TODO error code
+        fprintf(stderr, "Error %d: %s\n", errno, strerror(errno));
+        fprintf(stderr, "Could not open Dolphin ini file at %s\n", in_path);
+        return NULL;
+    }
+
+    out_path = malloc(out_path_len + 1);
+    if (!out_path) {
+        fclose(in);
+        return NULL;
+    }
+    memset(out_path, 0, out_path_len + 1);
+    strcpy(out_path, in_path);
+    strcat(out_path, ".tmp");
+#ifdef DEBUG
+    printf("Temp ini path: %s\n", out_path);
+#endif
+
+    out = fopen(out_path, "w");
+    if (!out) {
+        free(out_path);
+        fclose(in);
+        return NULL;
+    }
+
+    dolphin_ini_temp_path = out_path;
+
+    while (true) {
+        if (fgets(buff, 80, in) == NULL) break;
+        fprintf(out, "%s", buff); // Copy to temp.
+        if (strcmp(buff, "[ActionReplay]\n") == 0) {
+            fprintf(out, "$%s\n", save_comment);
+            dolphin_ini_original = in; // dolphin_ini_close will write the rest.
+            return out;
+        }
+    }
+
+    // We never found the ActionReplay section, so make it.
+    fprintf(out, "[ActionReplay]\n$%s\n", save_comment);
+    return out;
+}
+
+void dolphin_ini_close(FILE * out) {
+    char buff[80];
+    char name[SAVE_COMMENT_LEN + 2] = {'$'}; // One for $, another for newline.
+    bool in_ar = true;
+    bool in_old = false;
+
+    if (!out || !dolphin_ini_original) return;
+
+    memcpy(name + 1, save_comment, SAVE_COMMENT_LEN);
+#ifdef DEBUG
+    printf("Looking for old code named %s\n", name);
+#endif
+    strcat(name, "\n");
+
+    while (true) {
+        if (fgets(buff, 80, dolphin_ini_original) == NULL) break;
+
+        if (in_ar) {
+            if (buff[0] == '$') {
+                in_old = strcmp(buff, name) == 0;
+            } else if (buff[0] == '[') {
+                in_ar = false;
+                in_old = false;
+            }
+
+            // Copy to temp if not in our old output.
+            if (!in_old) fprintf(out, "%s", buff);
+        } else {
+            fprintf(out, "%s", buff); // Copy to temp.
+        }
+    }
+
+    fclose(dolphin_ini_original);
+    fclose(out);
+}
 
 void error(int code, unsigned long line, const char * info) {
     if (line > 0) printf("ERR%d on line %lu: ", code, line);
@@ -171,6 +334,8 @@ void a2m_feed_val(directive * did, dir_data * dat) {
     switch (*did) {
     default: break;
     case D_BRANCH:
+    case D_ASM:
+    case D_FILE:
         if (dat->home == 0) {
             dat->home = 0x80000000 + dat->value;
             user_codes_push(dat->home, find_branch(dat->home, dat->target));
@@ -190,12 +355,117 @@ void a2m_feed_val(directive * did, dir_data * dat) {
     }
 }
 
+void a2m_exec_as(bool use_in_file, dir_data * dat) {
+    pid_t pid;
+
+    if (!use_in_file) pipe(dat->asm_pipe);
+    pid = fork();
+
+    if (pid == 0) {
+        if (!use_in_file) {
+            dup2(dat->asm_pipe[0], STDIN_FILENO);
+            close(dat->asm_pipe[0]);
+            close(dat->asm_pipe[1]);
+        }
+        execlp(EXEC_AS, EXEC_AS,
+                "-a32", "-mbig", "-mregnames",
+                use_in_file ? dat->asm_in : (const char *)NULL,
+                (const char *)NULL);
+        exit(1); // If we got here, exec failed.
+    }
+
+    if (!use_in_file) close(dat->asm_pipe[0]);
+    if (pid > 0) {
+        dat->asm_pid = pid;
+    }
+}
+
+void a2m_exec_objcopy(directive * did, dir_data * dat) {
+    if (dat->asm_pid == -1 || dat->asm_pid == 0) return;
+    if (dat->asm_out == NULL) return;
+
+    int status;
+
+    waitpid(dat->asm_pid, &status, 0);
+
+    if (status) {
+        // @TODO Actually error out.
+        printf("as failed, code %d\n", status);
+    } else {
+        int obj_pipe[2];
+        pid_t obj_pid;
+
+        pipe(obj_pipe);
+        obj_pid = fork();
+
+        if (obj_pid == 0) {
+            dup2(obj_pipe[1], STDOUT_FILENO);
+            close(obj_pipe[0]);
+            close(obj_pipe[1]);
+            execlp(EXEC_OBJCOPY, EXEC_OBJCOPY,
+                    "-O", "binary", dat->asm_out, "/dev/stdout",
+                    (const char *)NULL);
+            exit(1); // If we got here, exec failed.
+        }
+
+        close(obj_pipe[1]);
+        if (obj_pid > 0) {
+            // Read output from objcopy.
+
+            unsigned char * buffer = malloc(1024);
+            ssize_t count;
+
+            if (buffer) {
+                while (true) {
+                    count = read(obj_pipe[0], buffer, 1024);
+
+                    if (count == 0) break;
+                    if (count == -1) {
+                        // @TODO Output error.
+                        break;
+                    }
+
+                    if (count % 4 != 0) {
+                        // @TODO Print warning that last value will be ignored.
+                    }
+
+                    for (ssize_t i = 0; i < count; ++i) {
+                        if (i % 4 == 0) dat->value = 0;
+                        dat->value = (dat->value << 8) + buffer[i];
+                        if (i % 4 == 3) {
+                            a2m_feed_val(did, dat);
+                        }
+                    }
+                }
+                dat->value = 0;
+                free(buffer);
+            }
+        }
+        close(obj_pipe[0]);
+
+        free(dat->asm_out);
+        dat->asm_out = NULL;
+    }
+}
+
 // Initialize all data pertaining to the current directive.
 void a2m_start_dir(directive did, dir_data * dat) {
     dat->home = 0;
     dat->value = 0;
 
-    if (did == D_TITLE) {
+    if (dat->asm_in == NULL) {
+        dat->asm_in_size = 1024;
+        dat->asm_in = malloc(dat->asm_in_size);
+    }
+    memset(dat->asm_in, 0, dat->asm_in_size);
+    dat->asm_in_idx = 0;
+
+    if (did == D_ASM) {
+        dat->asm_out = strdup("./a.out"); // @TEMP
+        a2m_exec_as(false, dat);
+    } else if (did == D_FILE) {
+        dat->asm_out = strdup("./a.out"); // @TEMP
+    } else if (did == D_TITLE) {
         memset(save_comment, 0, sizeof(save_comment));
         save_comment_next = 0;
     }
@@ -204,7 +474,15 @@ void a2m_start_dir(directive did, dir_data * dat) {
 // De-init all data pertaining to the current directive
 // and write any data necessary for its end.
 void a2m_end_dir(directive * did, dir_data * dat) {
-    if (*did == D_BRANCH) {
+    if (*did == D_ASM) {
+        close(dat->asm_pipe[1]);
+        a2m_exec_objcopy(did, dat);
+    } else if (*did == D_FILE) {
+        a2m_exec_as(true, dat);
+        a2m_exec_objcopy(did, dat);
+    }
+
+    if (*did == D_BRANCH || *did == D_ASM || *did == D_FILE) {
         user_codes_push(dat->target, find_branch(dat->target, dat->home + 4));
         dat->target += 4;
     }
@@ -218,7 +496,7 @@ void read_a2m(char * filename) {
     unsigned long line = 1;
     char next, last;
     size_t readc = 0;
-    bool in_rem = false;
+    Comment_Mode in_rem = REM_FALSE;
     bool next_is_space;
 
     // Directive data:
@@ -227,8 +505,30 @@ void read_a2m(char * filename) {
     char dir_str[DIRECTIVE_STR_LEN] = {0};
     int dir_str_i = 0;
 
-    src = fopen(filename, "rb");
+    src = fopen(filename, "r");
     if (!src) error(ERR_FILE_IN, 0, filename);
+
+#ifdef DEBUG
+    // Init parser debug.
+    printf("=== Color Key ===\n");
+    printf("Directives: ");
+    dbg_print_key("D_NONE", D_NONE, REM_FALSE);
+    dbg_print_key("D_CHANGE", D_CHANGE, REM_FALSE);
+    dbg_print_key("D_BRANCH", D_BRANCH, REM_FALSE);
+    dbg_print_key("D_ASM", D_ASM, REM_FALSE);
+    dbg_print_key("D_FILE", D_FILE, REM_FALSE);
+    dbg_print_key("D_SET", D_SET, REM_FALSE);
+    dbg_print_key("D_TITLE", D_TITLE, REM_FALSE);
+    dbg_print_key("D_INCLUDE", D_INCLUDE, REM_FALSE);
+    printf("\nComment modes: ");
+    dbg_print_key("REM_FALSE", D_NONE, REM_FALSE);
+    dbg_print_key("REM_TRUE", D_NONE, REM_TRUE);
+    dbg_print_key("REM_MULTI", D_NONE, REM_MULTI);
+    dbg_print_key("REM_MULTI_END", D_NONE, REM_MULTI_END);
+    dbg_print_key("REM_NEW", D_NONE, REM_NEW);
+    printf("\n=== Begin Input ===");
+    dbg_print_with_dir_color(1, '\n', did, in_rem);
+#endif
 
     do {
         // If at EOF, treat as null-terminator.
@@ -237,19 +537,51 @@ void read_a2m(char * filename) {
         else if (readc != 1) break;
         next_is_space = isspace(next);
 
+        dbg_print_with_dir_color(line + 1, next, did, in_rem);
+
         // Check if comment has started.
-        if (next == ';') {
-            in_rem = true;
+        if (!in_rem && next == KEYCHAR_REM_START) {
+            in_rem = REM_NEW;
             continue;
         }
 
-        // Check if comment has ended.
+        // Update comment state.
         if (in_rem) {
-            if (next == '\n') {
-                in_rem = false;
-                ++line;
+            switch (in_rem) {
+            case REM_TRUE:
+                if (next == '\n') {
+                    in_rem = REM_FALSE;
+                }
+                break;
+            case REM_MULTI:
+                if (next == KEYCHAR_REM_MULTI) {
+                    in_rem = REM_MULTI_END;
+                }
+                break;
+            case REM_MULTI_END:
+                if (next == KEYCHAR_REM_START) {
+                    in_rem = REM_FALSE;
+                } else {
+                    in_rem = REM_MULTI;
+                }
+                break;
+            case REM_NEW:
+                if (next == '\n') {
+                    in_rem = REM_FALSE;
+                } else if (next == KEYCHAR_REM_MULTI) {
+                    in_rem = REM_MULTI;
+                } else {
+                    in_rem = REM_TRUE;
+                }
+                break;
+            default: break;
             }
-            continue;
+
+            // Some directives require newlines to signal
+            // the end of the directive, so pass \n and \r on.
+            if (next != '\n' && next != '\r') {
+                continue;
+            }
         }
 
         // Check for the start of a new directive & end the current one.
@@ -280,8 +612,11 @@ void read_a2m(char * filename) {
                 // Match string with directive ID.
 
                 if (strcmp(dir_str, "branch") == 0)     did = D_BRANCH;
+                else if (strcmp(dir_str, "asm") == 0)   did = D_ASM;
+                else if (strcmp(dir_str, "file") == 0)  did = D_FILE;
                 else if (strcmp(dir_str, "set") == 0)   did = D_SET;
                 else if (strcmp(dir_str, "title") == 0) did = D_TITLE;
+                else if (strcmp(dir_str, "include") == 0) did = D_INCLUDE;
                 else error(ERR_DIRECTIVE_UNKNOWN, line, dir_str);
 
                 a2m_start_dir(did, &dat);
@@ -293,6 +628,33 @@ void read_a2m(char * filename) {
                 dir_str[dir_str_i++] = next;
             }
 
+            break;
+        case D_ASM:
+            if (dat.home) {
+                char out[2] = {next, 0};
+                write(dat.asm_pipe[1], out, 1);
+            } else {
+                goto read_hex;
+            }
+            break;
+        case D_FILE:
+            if (dat.home) {
+                if (next == '\n' || next == '\r') {
+                    // This will trigger the assembler.
+                    a2m_end_dir(&did, &dat);
+                    did = D_NONE;
+                } else {
+                    // Appent character to path.
+                    if (dat.asm_in_idx >= dat.asm_in_size - 1) {
+                        dat.asm_in_size += 1024;
+                        dat.asm_in = realloc(dat.asm_in, dat.asm_in_size);
+                    }
+                    dat.asm_in[dat.asm_in_idx++] = next;
+                    dat.asm_in[dat.asm_in_idx] = '\0';
+                }
+            } else {
+                goto read_hex;
+            }
             break;
         case D_TITLE:
             // If end-of-line, the title is complete. Otherwise add character to title.
@@ -307,6 +669,7 @@ void read_a2m(char * filename) {
 
             break;
         default:
+        read_hex:
             // At this point, we must be reading hex values.
 
             if (next_is_space) {
@@ -355,35 +718,42 @@ void read_a2m(char * filename) {
     fclose(src);
 }
 
-#define POKE(val)          fprintf(out, "04%06X %08X\r\n", target & 0xFFFFFF, (val) & 0xFFFFFFFF)
-#define ATPOKE(addr, val)  fprintf(out, "04%06X %08X\r\n", (addr) & 0xFFFFFF, (val) & 0xFFFFFFFF)
+#define POKE(val)          fprintf(out, "04%06X %08X\n", target & 0xFFFFFF, (val) & 0xFFFFFFFF)
+#define ATPOKE(addr, val)  fprintf(out, "04%06X %08X\n", (addr) & 0xFFFFFF, (val) & 0xFFFFFFFF)
 #define INCPOKE(val)       { target += 4; POKE(val); }
 
 // TODO: Allow usage of standard input / output.
 int main(int argc, char ** argv) {
     FILE * out;
     uint32_t target = 0;
+    bool use_dolphin_ini = true;
 
     if (argc < 3) {
         printf("Usage:   %s infile outfile\n"
-                "Example: %s MyFunMods.a2m MyFunMods.txt\n\n"
+                "Example: %s in.a2m out.txt\n\n"
                 "The output should be used as an AR code in Dolphin.\n"
                 "Run Melee with the code enabled and allow the game\n"
                 "to save. The emulated memory card will have a save\n"
                 "file that loads your codes.\n\n"
                 "See the README for details.\n",
-                argv[0], argv[0]);
+               argv[0], argv[0]);
         return -1;
     }
 
-    out = fopen(argv[2], "wb");
-    if (!out) error(ERR_FILE_OUT, 0, argv[2]);
+    dolphin_ini_original_path = "/home/noah/.local/share/dolphin-emu/GameSettings/GALE01.ini";
 
     user_codes_addr = (uint32_t *)malloc(USER_CODES_INIT_LEN * sizeof(*user_codes_addr));
     user_codes_val  = (uint32_t *)malloc(USER_CODES_INIT_LEN * sizeof(*user_codes_val));
     if (!user_codes_addr || !user_codes_val) error(ERR_CODES_ALLOC, 0, 0);
 
     read_a2m(argv[1]);
+
+    if (use_dolphin_ini) {
+        out = dolphin_ini_seek(dolphin_ini_original_path);
+    } else {
+        out = fopen(argv[2], "w");
+        if (!out) error(ERR_FILE_OUT, 0, argv[2]);
+    }
 
     // Fill nametag data with D4 bytes of garbage to start overflow.
     // Note: 0x35 is 0xD4 / 4
@@ -536,6 +906,20 @@ int main(int argc, char ** argv) {
     INCPOKE(0x38210008); // addi sp, sp, 8
     INCPOKE(0x7C0803A6); // mtlr r0
     INCPOKE(0x4E800020); // blr
+
+    if (use_dolphin_ini) {
+        dolphin_ini_close(out);
+#ifdef DEBUG
+        printf("%s -> %s\n", dolphin_ini_temp_path, dolphin_ini_original_path);
+#endif
+        // @TODO Depending on the libc, this may be required:
+        // remove(dolphin_ini_original_path);
+        if (rename(dolphin_ini_temp_path, dolphin_ini_original_path)) {
+            // @TODO error code
+            fprintf(stderr, "Failed to copy temp ini file into place.\n");
+            fprintf(stderr, "Error %d: %s\n", errno, strerror(errno));
+        }
+    }
 
     return 0;
 }
