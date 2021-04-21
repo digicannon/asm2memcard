@@ -34,6 +34,7 @@
 #ifdef _WIN32
 // @TODO
 #else
+#include <dirent.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -157,6 +158,38 @@ void dbg_print_key(const char * name, directive did, Comment_Mode rem) {
 #define dbg_print_with_dir_color(line, c, did, rem)
 #define dbg_print_key(name, did, rem)
 #endif
+
+#define DEFAULT_INI_DIR "/.local/share/dolphin-emu/GameSettings/"
+#define DEFAULT_INI_NAME "GALE01.ini"
+void dolphin_ini_find_path() {
+    const char * home = getenv("HOME");
+    char * temp;
+    DIR * settings_dir;
+
+    dolphin_ini_original_path = NULL;
+    if (home == NULL) return;
+
+    temp = calloc(strlen(home) + strlen(DEFAULT_INI_DIR DEFAULT_INI_NAME) + 1, 1);
+    if (temp) {
+        strcpy(temp, home);
+        strcat(temp, DEFAULT_INI_DIR);
+        settings_dir = opendir(temp);
+#ifdef DEBUG
+        printf("Opening %s ", temp);
+        if (settings_dir) puts("OK");
+        else              puts("failed");
+#endif
+        if (settings_dir) {
+            closedir(settings_dir);
+            strcat(temp, DEFAULT_INI_NAME);
+            dolphin_ini_original_path = temp;
+        }
+    }
+
+#ifdef DEBUG
+    printf("Default INI path set to %s\n", dolphin_ini_original_path);
+#endif
+}
 
 FILE * dolphin_ini_seek(const char * in_path) {
     const size_t in_path_len = strlen(in_path);
@@ -740,7 +773,7 @@ int main(int argc, char ** argv) {
         return -1;
     }
 
-    dolphin_ini_original_path = "/home/noah/.local/share/dolphin-emu/GameSettings/GALE01.ini";
+    dolphin_ini_find_path();
 
     user_codes_addr = (uint32_t *)malloc(USER_CODES_INIT_LEN * sizeof(*user_codes_addr));
     user_codes_val  = (uint32_t *)malloc(USER_CODES_INIT_LEN * sizeof(*user_codes_val));
@@ -750,6 +783,7 @@ int main(int argc, char ** argv) {
 
     if (use_dolphin_ini) {
         out = dolphin_ini_seek(dolphin_ini_original_path);
+        if (!out) error(ERR_FILE_OUT, 0, dolphin_ini_original_path);
     } else {
         out = fopen(argv[2], "w");
         if (!out) error(ERR_FILE_OUT, 0, argv[2]);
