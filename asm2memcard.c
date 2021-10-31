@@ -56,9 +56,9 @@
 #define ERR_TITLE_LEN 8
 
 #define GARBAGE_VALUE 0x8BADF00D
-#define FREE_MEM_ADDR 0x80001800
+#define FREE_MEM_ADDR 0x80001810
 #define FREE_END_ADDR 0x80002FFF
-#define FREE_MEM_SIZE 0x17FF
+#define FREE_MEM_SIZE 0x17EF
 #define NAME_TAG_ADDR 0x8045D850
 #define NAME_END_ADDR 0x80469B94
 #define NAME_TAG_SIZE 0xC344
@@ -395,14 +395,43 @@ void a2m_exec_as(bool use_in_file, dir_data * dat) {
     pid = fork();
 
     if (pid == 0) {
+        char * new_dir = NULL;
+        char * filename = NULL;
+
         if (!use_in_file) {
+            // The a2m file contains the asm.  We will pipe it in.
             dup2(dat->asm_pipe[0], STDIN_FILENO);
             close(dat->asm_pipe[0]);
             close(dat->asm_pipe[1]);
+        } else {
+            // We're assembling source on the file system.
+            // chdir allows the source file to include things relative to it instead of a2m process.
+            filename = strrchr(dat->asm_in, '/');
+            if (filename) {
+                // !!! MEMORY OWNERSHIP !!!
+                // This code is not in control of this string but at the time of writing
+                // the contents are unused until the next directive.  It is currently
+                // safe to change its contents at this stage of the directive.
+                // Look out for this in the future.
+                new_dir = dat->asm_in; // filename points to inside of this string.
+                *filename = 0; // Set the \ as the end of the directory path.
+                ++filename; // Move past the \ which is now a null char.
+
+                if (*filename == 0) {
+                    // @TODO: Error out, user tried to assemble a directory.
+                }
+
+                chdir(new_dir);
+            } else {
+                // The file path is just a file name.
+                filename = dat->asm_in;
+            }
         }
+
         execlp(EXEC_AS, EXEC_AS,
                 "-a32", "-mbig", "-mregnames",
-                use_in_file ? dat->asm_in : (const char *)NULL,
+                "-o", dat->asm_out,
+                use_in_file ? filename : (const char *)NULL,
                 (const char *)NULL);
         exit(1); // If we got here, exec failed.
     }
@@ -481,6 +510,47 @@ void a2m_exec_objcopy(directive * did, dir_data * dat) {
     }
 }
 
+// getcwd, but without an existing buffer.
+// The buffer will resize until it can fit
+// the current working directory, even if
+// it is larger than PATH_MAX.
+static char * sturdy_getcwd() {
+    size_t size  = PATH_MAX;
+    char * path  = NULL;
+    char * valid = NULL;
+
+    for (; !valid; size += PATH_MAX) {
+        path  = realloc(path, size);
+        valid = getcwd(path, size);
+
+        if (!valid && errno != ERANGE) {
+            if (path) free(path);
+            return NULL;
+        }
+    }
+
+    return path;
+}
+
+static char * append_to_cwd(const char * filename) {
+    char * cwd;
+    char * ret;
+
+    if (filename == NULL) return NULL;
+
+    cwd = sturdy_getcwd();
+    if (cwd == NULL) return NULL;
+
+    ret = calloc(strlen(cwd) + strlen(filename) + 1, 1);
+    if (ret) {
+        strcpy(ret, cwd);
+        strcat(ret, filename);
+    }
+
+    free(cwd);
+    return ret;
+}
+
 // Initialize all data pertaining to the current directive.
 void a2m_start_dir(directive did, dir_data * dat) {
     dat->home = 0;
@@ -493,11 +563,12 @@ void a2m_start_dir(directive did, dir_data * dat) {
     memset(dat->asm_in, 0, dat->asm_in_size);
     dat->asm_in_idx = 0;
 
+#define ASM_OUT_NAME "/a.out"
     if (did == D_ASM) {
-        dat->asm_out = strdup("./a.out"); // @TEMP
+        dat->asm_out = append_to_cwd(ASM_OUT_NAME);
         a2m_exec_as(false, dat);
     } else if (did == D_FILE) {
-        dat->asm_out = strdup("./a.out"); // @TEMP
+        dat->asm_out = append_to_cwd(ASM_OUT_NAME);
     } else if (did == D_TITLE) {
         memset(save_comment, 0, sizeof(save_comment));
         save_comment_next = 0;
