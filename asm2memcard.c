@@ -35,6 +35,7 @@
 // @TODO
 #else
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -442,6 +443,7 @@ void a2m_exec_as(bool use_in_file, dir_data * dat) {
     }
 }
 
+static char * append_to_cwd(const char * filename);
 void a2m_exec_objcopy(directive * did, dir_data * dat) {
     if (dat->asm_pid == -1 || dat->asm_pid == 0) return;
     if (dat->asm_out == NULL) return;
@@ -454,57 +456,57 @@ void a2m_exec_objcopy(directive * did, dir_data * dat) {
         // @TODO Actually error out.
         printf("as failed, code %d\n", status);
     } else {
-        int obj_pipe[2];
-        pid_t obj_pid;
-
-        pipe(obj_pipe);
-        obj_pid = fork();
+        pid_t obj_pid = fork();
+        char * obj_out = append_to_cwd("/a.obj");
 
         if (obj_pid == 0) {
-            dup2(obj_pipe[1], STDOUT_FILENO);
-            close(obj_pipe[0]);
-            close(obj_pipe[1]);
             execlp(EXEC_OBJCOPY, EXEC_OBJCOPY,
-                    "-O", "binary", dat->asm_out, "/dev/stdout",
+                    "-O", "binary", dat->asm_out, obj_out,
                     (const char *)NULL);
             exit(1); // If we got here, exec failed.
         }
 
-        close(obj_pipe[1]);
         if (obj_pid > 0) {
             // Read output from objcopy.
+            waitpid(obj_pid, &status, 0);
+            if (status) {
+                printf("objcopy failed, code %d\n", status);
+            } else {
+                int obj_out_handle = open(obj_out, O_RDONLY);
+                if (obj_out_handle == -1) {
+                    printf("failed to open objcopy output (%s), error %d\n", obj_out, errno);
+                } else {
+                    unsigned char buffer[1024];
+                    ssize_t count;
 
-            unsigned char * buffer = malloc(1024);
-            ssize_t count;
+                    while (true) {
+                        count = read(obj_out_handle, buffer, 1024);
 
-            if (buffer) {
-                while (true) {
-                    count = read(obj_pipe[0], buffer, 1024);
+                        if (count == 0) break;
+                        if (count == -1) {
+                            // @TODO Output error.
+                            break;
+                        }
 
-                    if (count == 0) break;
-                    if (count == -1) {
-                        // @TODO Output error.
-                        break;
-                    }
+                        if (count % 4 != 0) {
+                            // @TODO Print warning that last value will be ignored.
+                        }
 
-                    if (count % 4 != 0) {
-                        // @TODO Print warning that last value will be ignored.
-                    }
-
-                    for (ssize_t i = 0; i < count; ++i) {
-                        if (i % 4 == 0) dat->value = 0;
-                        dat->value = (dat->value << 8) + buffer[i];
-                        if (i % 4 == 3) {
-                            a2m_feed_val(did, dat);
+                        for (ssize_t i = 0; i < count; ++i) {
+                            if (i % 4 == 0) dat->value = 0;
+                            dat->value = (dat->value << 8) + buffer[i];
+                            if (i % 4 == 3) {
+                                a2m_feed_val(did, dat);
+                            }
                         }
                     }
+
+                    close(obj_out_handle);
                 }
-                dat->value = 0;
-                free(buffer);
             }
         }
-        close(obj_pipe[0]);
 
+        dat->value = 0;
         free(dat->asm_out);
         dat->asm_out = NULL;
     }
