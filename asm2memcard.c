@@ -160,7 +160,8 @@ void dbg_print_key(const char * name, directive did, Comment_Mode rem) {
 #define dbg_print_key(name, did, rem)
 #endif
 
-#define DEFAULT_INI_DIR "/.local/share/dolphin-emu/GameSettings/"
+//#define DEFAULT_INI_DIR "/.local/share/dolphin-emu/GameSettings/"
+#define DEFAULT_INI_DIR "/AppData/Roaming/Dolphin Emulator/GameSettings/"
 #define DEFAULT_INI_NAME "GALE01.ini"
 void dolphin_ini_find_path() {
     const char * home = getenv("HOME");
@@ -596,7 +597,7 @@ void a2m_end_dir(directive * did, dir_data * dat) {
 
 // Main script reading procedure.
 // Not quite thread-safe yet!
-void read_a2m(char * filename) {
+void read_a2m(const char * filename) {
     // Parsing data:
     FILE * src;
     unsigned long line = 1;
@@ -828,11 +829,13 @@ void read_a2m(char * filename) {
 #define ATPOKE(addr, val)  fprintf(out, "04%06X %08X\n", (addr) & 0xFFFFFF, (val) & 0xFFFFFFFF)
 #define INCPOKE(val)       { target += 4; POKE(val); }
 
-// TODO: Allow usage of standard input / output.
 int main(int argc, char ** argv) {
     FILE * out;
     uint32_t target = 0;
-    bool use_dolphin_ini = true;
+    bool use_dolphin_ini = false;
+    bool use_nametag_loader = true;
+
+    int first_nonflag_arg = 0;
 
     if (argc < 3) {
         printf("Usage:   %s infile outfile\n"
@@ -846,173 +849,207 @@ int main(int argc, char ** argv) {
         return -1;
     }
 
-    dolphin_ini_find_path();
+    for (int i = 1; i < argc; ++i) {
+	const char * arg = argv[i];
+	if (arg[0] != '-') {
+	    first_nonflag_arg = i;
+	    break;
+	} else if (strcmp(arg, "--dolphin") == 0) {
+	    use_dolphin_ini = true;
+	} else if (strcmp(arg, "--loader") == 0) {
+	    use_nametag_loader = true;
+	} else if (strcmp(arg, "--no-loader") == 0) {
+	    use_nametag_loader = false;
+	} else {
+            printf("Unknown option %s\n", arg);
+	    return -1;
+	}
+    }
+
+    const char * arg_path_in = argv[first_nonflag_arg];
+    const char * arg_path_out = (first_nonflag_arg + 1 < argc) ? argv[first_nonflag_arg + 1] : NULL;
+
+#ifdef DEBUG
+    printf("use_dolphin_ini: %d\n", use_dolphin_ini);
+    printf("use_nametag_loader: %d\n", use_nametag_loader);
+    printf("arg_path_in:  %s\n", arg_path_in);
+    printf("arg_path_out: %s\n", arg_path_out);
+#endif
 
     user_codes_addr = (uint32_t *)malloc(USER_CODES_INIT_LEN * sizeof(*user_codes_addr));
     user_codes_val  = (uint32_t *)malloc(USER_CODES_INIT_LEN * sizeof(*user_codes_val));
     if (!user_codes_addr || !user_codes_val) error(ERR_CODES_ALLOC, 0, 0);
 
-    read_a2m(argv[1]);
+    read_a2m(arg_path_in);
 
     if (use_dolphin_ini) {
+        dolphin_ini_find_path();
         out = dolphin_ini_seek(dolphin_ini_original_path);
         if (!out) error(ERR_FILE_OUT, 0, dolphin_ini_original_path);
     } else {
-        out = fopen(argv[2], "w");
-        if (!out) error(ERR_FILE_OUT, 0, argv[2]);
+        out = fopen(arg_path_out, "w");
+        if (!out) error(ERR_FILE_OUT, 0, arg_path_out);
     }
 
-    // Fill nametag data with D4 bytes of garbage to start overflow.
-    // Note: 0x35 is 0xD4 / 4
-    target = NAME_TAG_ADDR;
-    for (int i = 0; i <= 0x35; ++i) {
-        POKE(GARBAGE_VALUE);
-        target += 4;
-    }
-    ATPOKE(0x45D924, 0x804EE8F8); // Original stack address.
-    ATPOKE(0x45D928, INJECTION_ADDR);
-    ATPOKE(0x45D92C, 0);
-
-    // Remove memcard wait @ CheckToSaveData.
-    // See "Waiting for SaveData" in notes.
-    user_codes_push(0x8001CDA0, 0xBB010010);
-
-    if (user_codes_next > 0) {
-        // Insert all poked addresses, then a 0, then the corresponding values.
-
-        target = USER_ADDR;
-        for (int i = 0; i < user_codes_next; ++i) {
-            POKE(user_codes_addr[i]);
+    if (use_nametag_loader) {
+        // Fill nametag data with D4 bytes of garbage to start overflow.
+        // Note: 0x35 is 0xD4 / 4
+        target = NAME_TAG_ADDR;
+        for (int i = 0; i <= 0x35; ++i) {
+            POKE(GARBAGE_VALUE);
             target += 4;
         }
-        POKE(0);
-        target += 4;
-        for (int i = 0; i < user_codes_next; ++i) {
-            POKE(user_codes_val[i]);
+        ATPOKE(0x45D924, 0x804EE8F8); // Original stack address.
+        ATPOKE(0x45D928, INJECTION_ADDR);
+        ATPOKE(0x45D92C, 0);
+
+        // Remove memcard wait @ CheckToSaveData.
+        // See "Waiting for SaveData" in notes.
+        user_codes_push(0x8001CDA0, 0xBB010010);
+
+        if (user_codes_next > 0) {
+            // Insert all poked addresses, then a 0, then the corresponding values.
+
+            target = USER_ADDR;
+            for (int i = 0; i < user_codes_next; ++i) {
+                POKE(user_codes_addr[i]);
+                target += 4;
+            }
+            POKE(0);
             target += 4;
+            for (int i = 0; i < user_codes_next; ++i) {
+                POKE(user_codes_val[i]);
+                target += 4;
+            }
+        } else {
+            error(ERR_POINTLESS, 0, 0);
         }
+
+        /* See "Waiting for SaveData" in notes.
+         * Insert a branch at the end of MemCard_CheckToSaveData to
+         * check if the memcard is ready to be wrote to.
+         * If it is, start loading.
+         * This prevents crashing from changing the save file name
+         * during autosave.  Usually happens on slow memcards.
+         */
+
+        target = INJECTION_ADDR;
+        POKE(0x38600054);    // li r3, 0x54 ; Coin SFX ID
+        INCPOKE(0x388000FE); // li r4, 0xFE ; Max Volume
+        INCPOKE(0x38A00080); // li r5, 0x80 ; ?, said to usually be 80
+        INCPOKE(0x38C00000); // li r6, 0    ; ?
+        INCPOKE(0x38E00000); // li r7, 0    ; Echo
+        INCPOKE(find_lbranch(target, 0x8038CFF4)); // bl PlaySFX
+        INCPOKE(0x3C608001); // lis r3, 0x8001
+        INCPOKE(0x6063CDA0); // ori r3, r3, 0xCDA0
+        uint32_t opcode_branch_check = find_branch(0x8001CDA0, target + 36);
+        INCPOKE(0x3C800000 + ((opcode_branch_check >> 16) & 0xFFFF));
+        INCPOKE(0x60840000 + (opcode_branch_check & 0xFFFF));
+        INCPOKE(0x90830000); // stw r4, 0(r3)
+        INCPOKE(0x7C0018AC); // dcbf r0, r3
+        INCPOKE(0x7C001FAC); // icbi r0, r3
+        INCPOKE(0x7C0004AC); // sync
+        INCPOKE(0x4C00012C); // isync
+        INCPOKE(find_branch(target, 0x80239E9C)); // Back to Melee!
+
+        // Check if memcard is ready.
+        INCPOKE(0x81DB0000); // lwz r14, 0(r27)
+        INCPOKE(0x2C0E0001); // cmpwi r14, 1
+        INCPOKE(0x41820008); // beq done
+        INCPOKE(0x48000019); // bl begin
+        INCPOKE(0xBB010010); // lmw r24, 0x0010(sp)
+        INCPOKE(0x3DC08001); // lis r14, 0x8001
+        INCPOKE(0x61CECDA4); // ori r14, r14, 0xCDA4
+        INCPOKE(0x7DC903A6); // mtctr r14
+        INCPOKE(0x4E800420); // bctr ; Return to CheckToSaveData
+
+        // Memcard is ready.  Begin loading!
+        INCPOKE(0x7C0802A6); // mflr r0
+        INCPOKE(0x90010004); // stw r0, 4(sp)
+        INCPOKE(0x9421FFF8); // stwu sp, -8(sp)
+        INCPOKE(find_lbranch(target, 0x800236DC)); // bl Music_Stop
+
+        /* The patcher assembly was taken from wParam's POKE patcher.
+         * This simply reads the user's addresses and values and puts
+         * them where they belong.  It also invalidates the cache
+         * for each overwritten address to prevent bad branch prediction.
+         */
+
+        // lis r7, upper word of USER_ADDR
+        // ori r7, r7, lower word of USER_ADDR
+        // lis r8, upper word of USER_ADDR + user_codes_next + 1
+        // ori r8, r8, lower word of USER_ADDR + user_codes_next + 1
+        INCPOKE(0x3CE00000 + ((USER_ADDR >> 16) & 0xFFFF));
+        INCPOKE(0x60E70000 + (USER_ADDR & 0xFFFF));
+        INCPOKE(0x3D000000 + (uint32_t)(((USER_ADDR + (user_codes_next + 1) * 4) >> 16) & 0xFFFF));
+        INCPOKE(0x61080000 + (uint32_t)((USER_ADDR + (user_codes_next + 1) * 4) & 0xFFFF));
+        // patcher:
+        INCPOKE(0x80670000); // lwz r3, 0(r7)
+        INCPOKE(0x80880000); // lwz r4, 0(r8)
+        INCPOKE(0x2C030000); // cmpwi r3, 0
+        INCPOKE(0x41820028); // beq loader
+        INCPOKE(0x90830000); // stw r4, 0(r3)
+        INCPOKE(0x54630034); // rlwinm r3, r3, 0, 0, 26
+        INCPOKE(0x7C0018AC); // dcbf r0, r3
+        INCPOKE(0x7C001FAC); // icbi r0, r3
+        INCPOKE(0x7C0004AC); // sync
+        INCPOKE(0x4C00012C); // isync
+        INCPOKE(0x38E70004); // addi r7, r7, 4
+        INCPOKE(0x39080004); // addi r8, r8, 4
+        INCPOKE(0x4BFFFFD0); // b patcher
+
+        /* Here the nametag area is cleared before asking the game
+         * to load/create a new save file.  This is explained below.
+         * However, I'd like to give a huge shout out to the
+         * Smashboards Community Symbol Map.  I would not have been
+         * able to decipher procedure calls without it!
+         */
+
+        // loader:
+        // lis r3, upper word of NAME_TAG_ADDDR
+        // ori r3, r3, lower word of NAME_TAG_ADDR
+        // li r4, 0
+        // lis r5, upper word of NAME_TAG_SIZE
+        // ori r5, r5, lower word of NAME_TAG_SIZE
+        // bl memset
+        INCPOKE(0x3C600000 + ((NAME_TAG_ADDR >> 16) & 0xFFFF));
+        INCPOKE(0x60630000 + (NAME_TAG_ADDR & 0xFFFF));
+        INCPOKE(0x38800000);
+        INCPOKE(0x3CA00000 + ((NAME_TAG_SIZE >> 16) & 0xFFFF));
+        INCPOKE(0x60A50000 + (NAME_TAG_SIZE & 0xFFFF));
+        INCPOKE(find_lbranch(target, 0x80003130));
+
+        /* Earlier, in the patch loop, the strings for memory card
+         * saves have been overwritten to the user's custom strings.
+         * As long as they are not 100% equal to Melee's, the save
+         * file with the custom data will be loaded.  If it does not
+         * already exist, the game will ask the user if they would
+         * like to create one.  This save file will NOT include the
+         * nametag overflow & should allow nametags to work normally.
+         */
+        INCPOKE(find_lbranch(target, 0x8015F600)); // bl InitializeNametagArea
+        INCPOKE(find_lbranch(target, 0x8001CBBC)); // bl DoLoadData
+        INCPOKE(0x38600054); // li r3, 0x54 ; Coin SFX ID
+        INCPOKE(0x388000FE); // li r4, 0xFE ; Max Volume
+        INCPOKE(0x38A00080); // li r5, 0x80 ; ?, said to usually be 80
+        INCPOKE(0x38C00000); // li r6, 0    ; ?
+        INCPOKE(0x38E00000); // li r7, 0    ; Echo
+        INCPOKE(find_lbranch(target, 0x8038CFF4)); // bl PlaySFX
+        INCPOKE(0x38600000); // li r3, 0 ; Title Screen ID
+        INCPOKE(find_lbranch(target, 0x801A428C)); // bl NewMajor
+        INCPOKE(find_lbranch(target, 0x801A4B60)); // bl SetGo
+
+        INCPOKE(0x8001000C); // lwz r0, 0xC(sp)
+        INCPOKE(0x38210008); // addi sp, sp, 8
+        INCPOKE(0x7C0803A6); // mtlr r0
+        INCPOKE(0x4E800020); // blr
     } else {
-        error(ERR_POINTLESS, 0, 0);
+        for (int i = 0; i < user_codes_next; ++i) {
+	    uint32_t addr = user_codes_addr[i];
+	    uint32_t val = user_codes_val[i];
+            ATPOKE(addr, val);
+	}
     }
-
-    /* See "Waiting for SaveData" in notes.
-     * Insert a branch at the end of MemCard_CheckToSaveData to
-     * check if the memcard is ready to be wrote to.
-     * If it is, start loading.
-     * This prevents crashing from changing the save file name
-     * during autosave.  Usually happens on slow memcards.
-     */
-
-    target = INJECTION_ADDR;
-    POKE(0x38600054);    // li r3, 0x54 ; Coin SFX ID
-    INCPOKE(0x388000FE); // li r4, 0xFE ; Max Volume
-    INCPOKE(0x38A00080); // li r5, 0x80 ; ?, said to usually be 80
-    INCPOKE(0x38C00000); // li r6, 0    ; ?
-    INCPOKE(0x38E00000); // li r7, 0    ; Echo
-    INCPOKE(find_lbranch(target, 0x8038CFF4)); // bl PlaySFX
-    INCPOKE(0x3C608001); // lis r3, 0x8001
-    INCPOKE(0x6063CDA0); // ori r3, r3, 0xCDA0
-    uint32_t opcode_branch_check = find_branch(0x8001CDA0, target + 36);
-    INCPOKE(0x3C800000 + ((opcode_branch_check >> 16) & 0xFFFF));
-    INCPOKE(0x60840000 + (opcode_branch_check & 0xFFFF));
-    INCPOKE(0x90830000); // stw r4, 0(r3)
-    INCPOKE(0x7C0018AC); // dcbf r0, r3
-    INCPOKE(0x7C001FAC); // icbi r0, r3
-    INCPOKE(0x7C0004AC); // sync
-    INCPOKE(0x4C00012C); // isync
-    INCPOKE(find_branch(target, 0x80239E9C)); // Back to Melee!
-
-    // Check if memcard is ready.
-    INCPOKE(0x81DB0000); // lwz r14, 0(r27)
-    INCPOKE(0x2C0E0001); // cmpwi r14, 1
-    INCPOKE(0x41820008); // beq done
-    INCPOKE(0x48000019); // bl begin
-    INCPOKE(0xBB010010); // lmw r24, 0x0010(sp)
-    INCPOKE(0x3DC08001); // lis r14, 0x8001
-    INCPOKE(0x61CECDA4); // ori r14, r14, 0xCDA4
-    INCPOKE(0x7DC903A6); // mtctr r14
-    INCPOKE(0x4E800420); // bctr ; Return to CheckToSaveData
-
-    // Memcard is ready.  Begin loading!
-    INCPOKE(0x7C0802A6); // mflr r0
-    INCPOKE(0x90010004); // stw r0, 4(sp)
-    INCPOKE(0x9421FFF8); // stwu sp, -8(sp)
-    INCPOKE(find_lbranch(target, 0x800236DC)); // bl Music_Stop
-
-    /* The patcher assembly was taken from wParam's POKE patcher.
-     * This simply reads the user's addresses and values and puts
-     * them where they belong.  It also invalidates the cache
-     * for each overwritten address to prevent bad branch prediction.
-     */
-
-    // lis r7, upper word of USER_ADDR
-    // ori r7, r7, lower word of USER_ADDR
-    // lis r8, upper word of USER_ADDR + user_codes_next + 1
-    // ori r8, r8, lower word of USER_ADDR + user_codes_next + 1
-    INCPOKE(0x3CE00000 + ((USER_ADDR >> 16) & 0xFFFF));
-    INCPOKE(0x60E70000 + (USER_ADDR & 0xFFFF));
-    INCPOKE(0x3D000000 + (uint32_t)(((USER_ADDR + (user_codes_next + 1) * 4) >> 16) & 0xFFFF));
-    INCPOKE(0x61080000 + (uint32_t)((USER_ADDR + (user_codes_next + 1) * 4) & 0xFFFF));
-    // patcher:
-    INCPOKE(0x80670000); // lwz r3, 0(r7)
-    INCPOKE(0x80880000); // lwz r4, 0(r8)
-    INCPOKE(0x2C030000); // cmpwi r3, 0
-    INCPOKE(0x41820028); // beq loader
-    INCPOKE(0x90830000); // stw r4, 0(r3)
-    INCPOKE(0x54630034); // rlwinm r3, r3, 0, 0, 26
-    INCPOKE(0x7C0018AC); // dcbf r0, r3
-    INCPOKE(0x7C001FAC); // icbi r0, r3
-    INCPOKE(0x7C0004AC); // sync
-    INCPOKE(0x4C00012C); // isync
-    INCPOKE(0x38E70004); // addi r7, r7, 4
-    INCPOKE(0x39080004); // addi r8, r8, 4
-    INCPOKE(0x4BFFFFD0); // b patcher
-
-    /* Here the nametag area is cleared before asking the game
-     * to load/create a new save file.  This is explained below.
-     * However, I'd like to give a huge shout out to the
-     * Smashboards Community Symbol Map.  I would not have been
-     * able to decipher procedure calls without it!
-     */
-
-    // loader:
-    // lis r3, upper word of NAME_TAG_ADDDR
-    // ori r3, r3, lower word of NAME_TAG_ADDR
-    // li r4, 0
-    // lis r5, upper word of NAME_TAG_SIZE
-    // ori r5, r5, lower word of NAME_TAG_SIZE
-    // bl memset
-    INCPOKE(0x3C600000 + ((NAME_TAG_ADDR >> 16) & 0xFFFF));
-    INCPOKE(0x60630000 + (NAME_TAG_ADDR & 0xFFFF));
-    INCPOKE(0x38800000);
-    INCPOKE(0x3CA00000 + ((NAME_TAG_SIZE >> 16) & 0xFFFF));
-    INCPOKE(0x60A50000 + (NAME_TAG_SIZE & 0xFFFF));
-    INCPOKE(find_lbranch(target, 0x80003130));
-
-    /* Earlier, in the patch loop, the strings for memory card
-     * saves have been overwritten to the user's custom strings.
-     * As long as they are not 100% equal to Melee's, the save
-     * file with the custom data will be loaded.  If it does not
-     * already exist, the game will ask the user if they would
-     * like to create one.  This save file will NOT include the
-     * nametag overflow & should allow nametags to work normally.
-     */
-    INCPOKE(find_lbranch(target, 0x8015F600)); // bl InitializeNametagArea
-    INCPOKE(find_lbranch(target, 0x8001CBBC)); // bl DoLoadData
-    INCPOKE(0x38600054); // li r3, 0x54 ; Coin SFX ID
-    INCPOKE(0x388000FE); // li r4, 0xFE ; Max Volume
-    INCPOKE(0x38A00080); // li r5, 0x80 ; ?, said to usually be 80
-    INCPOKE(0x38C00000); // li r6, 0    ; ?
-    INCPOKE(0x38E00000); // li r7, 0    ; Echo
-    INCPOKE(find_lbranch(target, 0x8038CFF4)); // bl PlaySFX
-    INCPOKE(0x38600000); // li r3, 0 ; Title Screen ID
-    INCPOKE(find_lbranch(target, 0x801A428C)); // bl NewMajor
-    INCPOKE(find_lbranch(target, 0x801A4B60)); // bl SetGo
-
-    INCPOKE(0x8001000C); // lwz r0, 0xC(sp)
-    INCPOKE(0x38210008); // addi sp, sp, 8
-    INCPOKE(0x7C0803A6); // mtlr r0
-    INCPOKE(0x4E800020); // blr
 
     if (use_dolphin_ini) {
         dolphin_ini_close(out);
