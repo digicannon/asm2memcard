@@ -193,19 +193,22 @@ void dolphin_ini_find_path() {
 #endif
 }
 
-FILE * dolphin_ini_seek(const char * in_path) {
+FILE * dolphin_ini_seek(const char * in_path, bool clean) {
     const size_t in_path_len = strlen(in_path);
     const size_t out_path_len = in_path_len + 4; // .tmp
     char * out_path;
-    FILE * in = fopen(in_path, "r");
+    FILE * in;
     FILE * out;
     char buff[80];
 
-    if (!in) {
-        // @TODO error code
-        fprintf(stderr, "Error %d: %s\n", errno, strerror(errno));
-        fprintf(stderr, "Could not open Dolphin ini file at %s\n", in_path);
-        return NULL;
+    if (!clean) {
+	in = fopen(in_path, "r");
+        if (!in) {
+            // @TODO error code
+            fprintf(stderr, "Error %d: %s\n", errno, strerror(errno));
+            fprintf(stderr, "Could not open Dolphin ini file at %s\n", in_path);
+            return NULL;
+        }
     }
 
     out_path = malloc(out_path_len + 1);
@@ -229,18 +232,26 @@ FILE * dolphin_ini_seek(const char * in_path) {
 
     dolphin_ini_temp_path = out_path;
 
-    while (true) {
-        if (fgets(buff, 80, in) == NULL) break;
-        fprintf(out, "%s", buff); // Copy to temp.
-        if (strcmp(buff, "[ActionReplay]\n") == 0) {
-            fprintf(out, "$%s\n", save_comment);
-            dolphin_ini_original = in; // dolphin_ini_close will write the rest.
-            return out;
+
+    if (clean) {
+	fprintf(out, "[ActionReplay_Enabled]\n$%s\n", save_comment);
+	fprintf(out, "$Boot to Character Select [Dan Salvato]\n");
+	fprintf(out, "[ActionReplay]\n$%s\n", save_comment);
+    } else {
+        while (true) {
+            if (fgets(buff, 80, in) == NULL) break;
+            fprintf(out, "%s", buff); // Copy to temp.
+            if (strcmp(buff, "[ActionReplay]\n") == 0) {
+                fprintf(out, "$%s\n", save_comment);
+                dolphin_ini_original = in; // dolphin_ini_close will write the rest.
+                return out;
+            }
         }
+
+        // We never found the ActionReplay section, so make it.
+        fprintf(out, "[ActionReplay]\n$%s\n", save_comment);
     }
 
-    // We never found the ActionReplay section, so make it.
-    fprintf(out, "[ActionReplay]\n$%s\n", save_comment);
     return out;
 }
 
@@ -833,6 +844,7 @@ int main(int argc, char ** argv) {
     FILE * out;
     uint32_t target = 0;
     bool use_dolphin_ini = false;
+    bool clean_dolphin_ini = false;
     bool use_nametag_loader = true;
 
     int first_nonflag_arg = 0;
@@ -856,6 +868,8 @@ int main(int argc, char ** argv) {
 	    break;
 	} else if (strcmp(arg, "--dolphin") == 0) {
 	    use_dolphin_ini = true;
+	} else if (strcmp(arg, "--clean") == 0) {
+	    clean_dolphin_ini = true;
 	} else if (strcmp(arg, "--loader") == 0) {
 	    use_nametag_loader = true;
 	} else if (strcmp(arg, "--no-loader") == 0) {
@@ -884,7 +898,7 @@ int main(int argc, char ** argv) {
 
     if (use_dolphin_ini) {
         dolphin_ini_find_path();
-        out = dolphin_ini_seek(dolphin_ini_original_path);
+        out = dolphin_ini_seek(dolphin_ini_original_path, clean_dolphin_ini);
         if (!out) error(ERR_FILE_OUT, 0, dolphin_ini_original_path);
     } else {
         out = fopen(arg_path_out, "w");
