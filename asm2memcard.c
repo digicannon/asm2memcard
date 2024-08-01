@@ -57,9 +57,12 @@
 #define ERR_TITLE_LEN 8
 
 #define GARBAGE_VALUE 0x8BADF00D
-#define FREE_MEM_ADDR 0x80001810
-#define FREE_END_ADDR 0x80002FFF
-#define FREE_MEM_SIZE 0x17EF
+//#define FREE_MEM_ADDR 0x80001810
+//#define FREE_END_ADDR 0x80002FFF
+//#define FREE_MEM_SIZE 0x17EF
+#define FREE_MEM_ADDR 0x803FA3E8
+#define FREE_END_ADDR 0x803FC2EC
+#define FREE_MEM_SIZE 0x1F04
 #define NAME_TAG_ADDR 0x8045D850
 #define NAME_END_ADDR 0x80469B94
 #define NAME_TAG_SIZE 0xC344
@@ -814,6 +817,7 @@ void read_a2m(const char * filename) {
     if (dat.target >= FREE_END_ADDR) {
         printf("WARNING: Codes are too large! Had to write beyond free memory area!\n");
     }
+    printf("Ended output at 0x%X\n", dat.target);
 
     // Convert save title string to groups of uint32.
     uint32_t char32 = 0;
