@@ -55,14 +55,22 @@
 #define ERR_MALFORMED_ADDR 6
 #define ERR_CODES_ALLOC 7
 #define ERR_TITLE_LEN 8
+#define ERR_LAST_FREE_BANK 9
+#define ERR_AS_FAILURE 10
+
+typedef struct {
+    uint32_t start;
+    uint32_t end;
+} FreeMemoryRange;
+
+static FreeMemoryRange free_memory[] = {
+    {0x803FA3E8, 0x803FC2EC},
+    {0x803001DC, 0x80301E44},
+};
+static const int free_memory_bank_count = 2;
+static int free_memory_bank = 0;
 
 #define GARBAGE_VALUE 0x8BADF00D
-//#define FREE_MEM_ADDR 0x80001810
-//#define FREE_END_ADDR 0x80002FFF
-//#define FREE_MEM_SIZE 0x17EF
-#define FREE_MEM_ADDR 0x803FA3E8
-#define FREE_END_ADDR 0x803FC2EC
-#define FREE_MEM_SIZE 0x1F04
 #define NAME_TAG_ADDR 0x8045D850
 #define NAME_END_ADDR 0x80469B94
 #define NAME_TAG_SIZE 0xC344
@@ -99,6 +107,8 @@ typedef struct dir_data {
     uint32_t target;
     uint32_t home;
     uint32_t value;
+
+    size_t user_codes_start;
 
     int asm_pipe[2];
     pid_t asm_pid;
@@ -324,6 +334,9 @@ void error(int code, unsigned long line, const char * info) {
     case ERR_TITLE_LEN:
         printf("Title length is too large! Must be smaller than %d.\n", SAVE_COMMENT_LEN);
         break;
+    case ERR_AS_FAILURE:
+        printf("Failed to assemble input.  See above.");
+        break;
     }
 
     exit(code);
@@ -358,28 +371,14 @@ uint32_t find_branch(uint32_t from, uint32_t to) {
     }
 }
 
-// Utility procedure to insert branch code after the user's.
-void internal_asm_insert(uint32_t home, uint32_t * target, const uint32_t * c) {
-    uint32_t t = *target;
-
-    user_codes_push(home, find_branch(home, t));
-
-    while (*c != 0) {
-        user_codes_push(t, *c++);
-        t += 4;
-    }
-
-    user_codes_push(t, find_branch(t, home + 4));
-    t += 4;
-    *target = t;
-}
-
 // bl instruction instead of b.
 // Used for procedure calls.
 #define find_lbranch(from, to) (find_branch(from, to) + 1)
 
 // Handles hex values in user's script.
 void a2m_feed_val(directive * did, dir_data * dat) {
+    bool need_next_bank = false;
+
     switch (*did) {
     default: break;
     case D_BRANCH:
@@ -387,10 +386,32 @@ void a2m_feed_val(directive * did, dir_data * dat) {
     case D_FILE:
         if (dat->home == 0) {
             dat->home = 0x80000000 + dat->value;
+            dat->user_codes_start = user_codes_next;
             user_codes_push(dat->home, find_branch(dat->home, dat->target));
         } else {
             user_codes_push(dat->target, dat->value);
             dat->target += 4;
+
+            // Check if we need to switch free memory banks.
+            // Add 4 for the branch back to home that will be pushed at the end.
+            if (dat->target + 4 >= free_memory[free_memory_bank].end) {
+                if (free_memory_bank + 1 >= free_memory_bank_count) {
+                    error(ERR_LAST_FREE_BANK, 0, NULL);
+                } else {
+                    size_t wasted = free_memory[free_memory_bank].end - user_codes_addr[dat->user_codes_start + 1];
+                    ++free_memory_bank;
+                    printf("Switching to free memory bank %d, wasting 0x%X bytes.", free_memory_bank + 1, wasted);
+                    dat->target = free_memory[free_memory_bank].start;
+                    size_t i = dat->user_codes_start;
+                    // Recalculate the trampoline for this directive.
+                    user_codes_val[i++] = find_branch(dat->home, dat->target);
+                    // Relocate all the codes for this directive.
+                    for (; i < user_codes_next; ++i) {
+                        user_codes_addr[i] = dat->target;
+                        dat->target += 4;
+                    }
+                }
+            }
         }
         break;
     case D_SET:
@@ -459,7 +480,7 @@ void a2m_exec_as(bool use_in_file, dir_data * dat) {
 }
 
 static char * append_to_cwd(const char * filename);
-void a2m_exec_objcopy(directive * did, dir_data * dat) {
+void a2m_exec_objcopy(directive * did, dir_data * dat, unsigned long a2m_line) {
     if (dat->asm_pid == -1 || dat->asm_pid == 0) return;
     if (dat->asm_out == NULL) return;
 
@@ -470,6 +491,7 @@ void a2m_exec_objcopy(directive * did, dir_data * dat) {
     if (status) {
         // @TODO Actually error out.
         printf("as failed, code %d\n", status);
+        error(ERR_AS_FAILURE, a2m_line, NULL);
     } else {
         pid_t obj_pid = fork();
         char * obj_out = append_to_cwd("/a.obj");
@@ -594,13 +616,13 @@ void a2m_start_dir(directive did, dir_data * dat) {
 
 // De-init all data pertaining to the current directive
 // and write any data necessary for its end.
-void a2m_end_dir(directive * did, dir_data * dat) {
+void a2m_end_dir(directive * did, dir_data * dat, unsigned long line) {
     if (*did == D_ASM) {
         close(dat->asm_pipe[1]);
-        a2m_exec_objcopy(did, dat);
+        a2m_exec_objcopy(did, dat, line);
     } else if (*did == D_FILE) {
         a2m_exec_as(true, dat);
-        a2m_exec_objcopy(did, dat);
+        a2m_exec_objcopy(did, dat, line);
     }
 
     if (*did == D_BRANCH || *did == D_ASM || *did == D_FILE) {
@@ -622,7 +644,7 @@ void read_a2m(const char * filename) {
 
     // Directive data:
     directive did = D_NONE;
-    dir_data dat = {FREE_MEM_ADDR, 0, 0};
+    dir_data dat = {free_memory[free_memory_bank].start};
     char dir_str[DIRECTIVE_STR_LEN] = {0};
     int dir_str_i = 0;
 
@@ -709,7 +731,7 @@ void read_a2m(const char * filename) {
         // End-of-file will be handled as if the directive is being changed.
         if (next == '@' || next == 0) {
             if (!isspace(last)) a2m_feed_val(&did, &dat);
-            a2m_end_dir(&did, &dat);
+            a2m_end_dir(&did, &dat, line);
             did = D_CHANGE;
             continue;
         }
@@ -762,7 +784,7 @@ void read_a2m(const char * filename) {
             if (dat.home) {
                 if (next == '\n' || next == '\r') {
                     // This will trigger the assembler.
-                    a2m_end_dir(&did, &dat);
+                    a2m_end_dir(&did, &dat, line);
                     did = D_NONE;
                 } else {
                     // Appent character to path.
@@ -814,7 +836,7 @@ void read_a2m(const char * filename) {
         if (next == '\n') ++line;
     } while (readc == 1);
 
-    if (dat.target >= FREE_END_ADDR) {
+    if (dat.target >= free_memory[free_memory_bank].end) {
         printf("WARNING: Codes are too large! Had to write beyond free memory area!\n");
     }
     printf("Ended output at 0x%X\n", dat.target);
@@ -866,22 +888,22 @@ int main(int argc, char ** argv) {
     }
 
     for (int i = 1; i < argc; ++i) {
-	const char * arg = argv[i];
-	if (arg[0] != '-') {
-	    first_nonflag_arg = i;
-	    break;
-	} else if (strcmp(arg, "--dolphin") == 0) {
-	    use_dolphin_ini = true;
-	} else if (strcmp(arg, "--clean") == 0) {
-	    clean_dolphin_ini = true;
-	} else if (strcmp(arg, "--loader") == 0) {
-	    use_nametag_loader = true;
-	} else if (strcmp(arg, "--no-loader") == 0) {
-	    use_nametag_loader = false;
-	} else {
-            printf("Unknown option %s\n", arg);
-	    return -1;
-	}
+        const char * arg = argv[i];
+        if (arg[0] != '-') {
+            first_nonflag_arg = i;
+            break;
+        } else if (strcmp(arg, "--dolphin") == 0) {
+            use_dolphin_ini = true;
+        } else if (strcmp(arg, "--clean") == 0) {
+            clean_dolphin_ini = true;
+        } else if (strcmp(arg, "--loader") == 0) {
+            use_nametag_loader = true;
+        } else if (strcmp(arg, "--no-loader") == 0) {
+            use_nametag_loader = false;
+        } else {
+                printf("Unknown option %s\n", arg);
+            return -1;
+        }
     }
 
     const char * arg_path_in = argv[first_nonflag_arg];
@@ -1063,10 +1085,10 @@ int main(int argc, char ** argv) {
         INCPOKE(0x4E800020); // blr
     } else {
         for (int i = 0; i < user_codes_next; ++i) {
-	    uint32_t addr = user_codes_addr[i];
-	    uint32_t val = user_codes_val[i];
+            uint32_t addr = user_codes_addr[i];
+            uint32_t val = user_codes_val[i];
             ATPOKE(addr, val);
-	}
+        }
     }
 
     if (use_dolphin_ini) {
