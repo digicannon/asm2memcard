@@ -400,7 +400,7 @@ void a2m_feed_val(directive * did, dir_data * dat) {
                 } else {
                     size_t wasted = free_memory[free_memory_bank].end - user_codes_addr[dat->user_codes_start + 1];
                     ++free_memory_bank;
-                    printf("Switching to free memory bank %d, wasting 0x%X bytes.", free_memory_bank + 1, wasted);
+                    printf("\nSwitching to free memory bank %d, wasting 0x%X bytes.", free_memory_bank + 1, wasted);
                     dat->target = free_memory[free_memory_bank].start;
                     size_t i = dat->user_codes_start;
                     // Recalculate the trampoline for this directive.
