@@ -836,10 +836,13 @@ void read_a2m(const char * filename) {
         if (next == '\n') ++line;
     } while (readc == 1);
 
-    if (dat.target >= free_memory[free_memory_bank].end) {
-        printf("WARNING: Codes are too large! Had to write beyond free memory area!\n");
+    printf("Ended output at 0x%X", dat.target);
+    if (dat.target < free_memory[free_memory_bank].end) {
+        uint32_t remaining = free_memory[free_memory_bank].end - dat.target;
+        printf(", 0x%X bytes remaining.  That is %d instructions.\n", remaining, remaining / 4);
+    } else {
+        printf("\nWARNING: Codes are too large! Had to write beyond free memory area!\n");
     }
-    printf("Ended output at 0x%X\n", dat.target);
 
     // Convert save title string to groups of uint32.
     uint32_t char32 = 0;
