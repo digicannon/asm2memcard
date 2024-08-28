@@ -66,8 +66,9 @@ typedef struct {
 static FreeMemoryRange free_memory[] = {
     {0x803FA3E8, 0x803FC2EC},
     {0x803001DC, 0x80301E44},
+    {0x801910E0, 0x8019AF4C},
 };
-static const int free_memory_bank_count = 2;
+static const int free_memory_bank_count = 3;
 static int free_memory_bank = 0;
 
 #define GARBAGE_VALUE 0x8BADF00D
@@ -333,6 +334,9 @@ void error(int code, unsigned long line, const char * info) {
         break;
     case ERR_TITLE_LEN:
         printf("Title length is too large! Must be smaller than %d.\n", SAVE_COMMENT_LEN);
+        break;
+    case ERR_LAST_FREE_BANK:
+        printf("A bank switch was needed but there is no next bank to switch to.");
         break;
     case ERR_AS_FAILURE:
         printf("Failed to assemble input.  See above.");
