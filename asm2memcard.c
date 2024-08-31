@@ -58,6 +58,15 @@
 #define ERR_LAST_FREE_BANK 9
 #define ERR_AS_FAILURE 10
 
+typedef enum {
+    COMPILE_TARGET_GECKO = 0,
+    COMPILE_TARGET_DOLPHIN = 0xD,
+    COMPILE_TARGET_NINTENDONT = 0x11,
+} CompileTarget;
+static CompileTarget compile_target = COMPILE_TARGET_GECKO;
+
+static bool use_nametag_loader = false;
+
 typedef struct {
     uint32_t start;
     uint32_t end;
@@ -246,11 +255,12 @@ FILE * dolphin_ini_seek(const char * in_path, bool clean) {
 
     dolphin_ini_temp_path = out_path;
 
-
     if (clean) {
-	fprintf(out, "[ActionReplay_Enabled]\n$%s\n", save_comment);
-	fprintf(out, "$Boot to Character Select [Dan Salvato]\n");
-	fprintf(out, "[ActionReplay]\n$%s\n", save_comment);
+        fprintf(out, "[ActionReplay_Enabled]\n$%s\n", save_comment);
+        if (!use_nametag_loader) {
+            fprintf(out, "$Boot to Character Select [Dan Salvato]\n");
+        }
+        fprintf(out, "[ActionReplay]\n$%s\n", save_comment);
     } else {
         while (true) {
             if (fgets(buff, 80, in) == NULL) break;
@@ -848,37 +858,47 @@ void read_a2m(const char * filename) {
         printf("\nWARNING: Codes are too large! Had to write beyond free memory area!\n");
     }
 
-    // Convert save title string to groups of uint32.
-    uint32_t char32 = 0;
-    for (int i = 0; i < SAVE_COMMENT_LEN; ++i) {
-        char32 <<= 8;
-        char32 |= save_comment[i];
-        if ((i + 1) % 4 == 0) {
-            user_codes_push(0x803BAC3C + i - 3, char32);
-            user_codes_push(0x803BAC5C + i - 3, char32);
-            char32 = 0;
+    if (use_nametag_loader) {
+        // Convert save title string to groups of uint32.
+        uint32_t char32 = 0;
+        for (int i = 0; i < SAVE_COMMENT_LEN; ++i) {
+            char32 <<= 8;
+            char32 |= save_comment[i];
+            if ((i + 1) % 4 == 0) {
+                user_codes_push(0x803BAC3C + i - 3, char32);
+                user_codes_push(0x803BAC5C + i - 3, char32);
+                char32 = 0;
+            }
         }
-    }
 
-    // The above wrote to filename data at 803BAC5C, 60, and 64.
-    // Zero out the rest!
-    user_codes_push(0x803BAC68, 0);
-    user_codes_push(0x803BAC6C, 0);
-    user_codes_push(0x803BAC70, 0);
+        // The above wrote to filename data at 803BAC5C, 60, and 64.
+        // Zero out the rest!
+        user_codes_push(0x803BAC68, 0);
+        user_codes_push(0x803BAC6C, 0);
+        user_codes_push(0x803BAC70, 0);
+    } else if (save_comment_next > 0) {
+        printf("WARNING: Save filename ignored because you are not using a nametag loader.\n");
+    }
 
     fclose(src);
 }
 
-#define POKE(val)          fprintf(out, "04%06X %08X\n", target & 0xFFFFFF, (val) & 0xFFFFFFFF)
-#define ATPOKE(addr, val)  fprintf(out, "04%06X %08X\n", (addr) & 0xFFFFFF, (val) & 0xFFFFFFFF)
-#define INCPOKE(val)       { target += 4; POKE(val); }
+static void poke_impl(FILE * out, uint32_t target, uint32_t val) {
+    if (compile_target == COMPILE_TARGET_NINTENDONT) {
+        fprintf(out, "0x%06X, 0x%08X,\n", target & 0xFFFFFF, (val) & 0xFFFFFFFF);
+    } else {
+        fprintf(out, "04%06X %08X\n", target & 0xFFFFFF, (val) & 0xFFFFFFFF);
+    }
+}
+
+#define POKE(val)         poke_impl(out, target, val)
+#define ATPOKE(addr, val) poke_impl(out, addr, val)
+#define INCPOKE(val)      { target += 4; POKE(val); }
 
 int main(int argc, char ** argv) {
     FILE * out;
     uint32_t target = 0;
-    bool use_dolphin_ini = false;
     bool clean_dolphin_ini = false;
-    bool use_nametag_loader = true;
 
     int first_nonflag_arg = 0;
 
@@ -899,8 +919,10 @@ int main(int argc, char ** argv) {
         if (arg[0] != '-') {
             first_nonflag_arg = i;
             break;
+        } else if (strcmp(arg, "--nintendont") == 0) {
+            compile_target = COMPILE_TARGET_NINTENDONT;
         } else if (strcmp(arg, "--dolphin") == 0) {
-            use_dolphin_ini = true;
+            compile_target = COMPILE_TARGET_DOLPHIN;
         } else if (strcmp(arg, "--clean") == 0) {
             clean_dolphin_ini = true;
         } else if (strcmp(arg, "--loader") == 0) {
@@ -917,7 +939,7 @@ int main(int argc, char ** argv) {
     const char * arg_path_out = (first_nonflag_arg + 1 < argc) ? argv[first_nonflag_arg + 1] : NULL;
 
 #ifdef DEBUG
-    printf("use_dolphin_ini: %d\n", use_dolphin_ini);
+    printf("compile_target: 0x%X\n", compile_target);
     printf("use_nametag_loader: %d\n", use_nametag_loader);
     printf("arg_path_in:  %s\n", arg_path_in);
     printf("arg_path_out: %s\n", arg_path_out);
@@ -929,7 +951,7 @@ int main(int argc, char ** argv) {
 
     read_a2m(arg_path_in);
 
-    if (use_dolphin_ini) {
+    if (compile_target == COMPILE_TARGET_DOLPHIN) {
         dolphin_ini_find_path();
         out = dolphin_ini_seek(dolphin_ini_original_path, clean_dolphin_ini);
         if (!out) error(ERR_FILE_OUT, 0, dolphin_ini_original_path);
@@ -939,6 +961,10 @@ int main(int argc, char ** argv) {
     }
 
     if (use_nametag_loader) {
+        if (compile_target == COMPILE_TARGET_NINTENDONT) {
+            printf("WARNING: Compile target is set to Nintendont while building a nametag loader.\n");
+        }
+
         // Fill nametag data with D4 bytes of garbage to start overflow.
         // Note: 0x35 is 0xD4 / 4
         target = NAME_TAG_ADDR;
@@ -1098,7 +1124,7 @@ int main(int argc, char ** argv) {
         }
     }
 
-    if (use_dolphin_ini) {
+    if (compile_target == COMPILE_TARGET_DOLPHIN) {
         dolphin_ini_close(out);
 #ifdef DEBUG
         printf("%s -> %s\n", dolphin_ini_temp_path, dolphin_ini_original_path);
