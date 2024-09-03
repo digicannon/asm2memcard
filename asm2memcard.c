@@ -73,9 +73,9 @@ typedef struct {
 } FreeMemoryRange;
 
 static FreeMemoryRange free_memory[] = {
+    {0x801910E0, 0x8019AF4C},
     {0x803FA3E8, 0x803FC2EC},
     {0x803001DC, 0x80301E44},
-    {0x801910E0, 0x8019AF4C},
 };
 static const int free_memory_bank_count = 3;
 static int free_memory_bank = 0;
