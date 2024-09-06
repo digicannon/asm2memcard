@@ -99,9 +99,9 @@ typedef enum {
     REM_MULTI_END, // Was MULTI but just got first semicolon.
     REM_NEW, // Was FALSE but current character turned to TRUE.
     REM_MAX // DO NOT USE.
-} Comment_Mode;
+} CommentMode;
 
-typedef enum directive {
+typedef enum {
     D_NONE,
     D_CHANGE,
     D_BRANCH,
@@ -111,9 +111,9 @@ typedef enum directive {
     D_TITLE,
     D_INCLUDE,
     D_MAX // DO NOT USE.
-} directive;
+} Directive;
 
-typedef struct dir_data {
+typedef struct {
     uint32_t target;
     uint32_t home;
     uint32_t value;
@@ -127,7 +127,7 @@ typedef struct dir_data {
     char * asm_in;
     size_t asm_in_idx;
     size_t asm_in_size;
-} dir_data;
+} DirData;
 
 // NOTE: Dir len should be longer than any possible length.
 #define DIRECTIVE_STR_LEN 8
@@ -147,7 +147,7 @@ static FILE * dolphin_ini_original;
 const char * dolphin_ini_temp_path;
 
 #ifdef DEBUG
-void dbg_print_with_dir_color(unsigned long line, char c, directive did, Comment_Mode rem) {
+void dbg_print_with_dir_color(unsigned long line, char c, Directive did, CommentMode rem) {
     if (c == 0) {
         printf("\033[0m\n");
         return;
@@ -172,7 +172,7 @@ void dbg_print_with_dir_color(unsigned long line, char c, directive did, Comment
     }
 }
 
-void dbg_print_key(const char * name, directive did, Comment_Mode rem) {
+void dbg_print_key(const char * name, Directive did, CommentMode rem) {
     for (const char * c = name; *c; ++c) {
         dbg_print_with_dir_color(-1, *c, did, rem);
     }
@@ -390,7 +390,7 @@ uint32_t find_branch(uint32_t from, uint32_t to) {
 #define find_lbranch(from, to) (find_branch(from, to) + 1)
 
 // Handles hex values in user's script.
-void a2m_feed_val(directive * did, dir_data * dat) {
+void a2m_feed_val(Directive * did, DirData * dat) {
     bool need_next_bank = false;
 
     switch (*did) {
@@ -439,7 +439,7 @@ void a2m_feed_val(directive * did, dir_data * dat) {
     }
 }
 
-void a2m_exec_as(bool use_in_file, dir_data * dat) {
+void a2m_exec_as(bool use_in_file, DirData * dat) {
     pid_t pid;
 
     if (!use_in_file) pipe(dat->asm_pipe);
@@ -494,7 +494,7 @@ void a2m_exec_as(bool use_in_file, dir_data * dat) {
 }
 
 static char * append_to_cwd(const char * filename);
-void a2m_exec_objcopy(directive * did, dir_data * dat, unsigned long a2m_line) {
+void a2m_exec_objcopy(Directive * did, DirData * dat, unsigned long a2m_line) {
     if (dat->asm_pid == -1 || dat->asm_pid == 0) return;
     if (dat->asm_out == NULL) return;
 
@@ -605,7 +605,7 @@ static char * append_to_cwd(const char * filename) {
 }
 
 // Initialize all data pertaining to the current directive.
-void a2m_start_dir(directive did, dir_data * dat) {
+void a2m_start_dir(Directive did, DirData * dat) {
     dat->home = 0;
     dat->value = 0;
 
@@ -630,7 +630,7 @@ void a2m_start_dir(directive did, dir_data * dat) {
 
 // De-init all data pertaining to the current directive
 // and write any data necessary for its end.
-void a2m_end_dir(directive * did, dir_data * dat, unsigned long line) {
+void a2m_end_dir(Directive * did, DirData * dat, unsigned long line) {
     if (*did == D_ASM) {
         close(dat->asm_pipe[1]);
         a2m_exec_objcopy(did, dat, line);
@@ -653,12 +653,12 @@ void read_a2m(const char * filename) {
     unsigned long line = 1;
     char next, last;
     size_t readc = 0;
-    Comment_Mode in_rem = REM_FALSE;
+    CommentMode in_rem = REM_FALSE;
     bool next_is_space;
 
     // Directive data:
-    directive did = D_NONE;
-    dir_data dat = {free_memory[free_memory_bank].start};
+    Directive did = D_NONE;
+    DirData dat = {free_memory[free_memory_bank].start};
     char dir_str[DIRECTIVE_STR_LEN] = {0};
     int dir_str_i = 0;
 
