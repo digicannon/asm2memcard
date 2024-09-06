@@ -1,1 +1,32 @@
+#* Test file for asm2memcard.
+   Comments use # to match assembler. *#
+
+# Title of save data.
 @title Test Data
+
+# Tournament settings.
+@set 45BF10 00340102 # Stock mode.
+@set 45BF14 04000A00 # 4 Stocks & 1.0 damage ratio.
+@set 45BF18 08010100 # 8min timer & friendly fire.
+@set 45C370 FF0000FF # Disable items.
+@set 45C380 00000000 # Disable rumble for all.
+@set 45C384 00000100 # Deflicker off! Stop making your TV blurry AF.
+@set 45C388 070000B0 # Legal stages only for Random.
+# Unlock characters & stages.
+@set 45BF28 FFFFFFFF
+@set 45BF2C FFFFFFFF
+
+# Use a branch (could use a set instead) to replace menu music.
+@branch 15ED1C
+38000035 981F0001
+8001001C
+
+@asm 263334
+    # Set match to 6 players.
+    lis r3, 0x8048
+    lbz r4, 0x7C0(r3)
+    ori r4, r4, 0x18 # HUDCount_Six
+    stb r4, 0x7C0(r3)
+    lwz	r0, 0x34(sp) # Default code line.
+
+@file 25C00C test.asm
