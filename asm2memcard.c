@@ -858,7 +858,7 @@ void read_a2m(const char * filename) {
         printf("\nWARNING: Codes are too large! Had to write beyond free memory area!\n");
     }
 
-    if (use_nametag_loader) {
+    if (save_comment_next > 0) {
         // Convert save title string to groups of uint32.
         uint32_t char32 = 0;
         for (int i = 0; i < SAVE_COMMENT_LEN; ++i) {
@@ -876,8 +876,6 @@ void read_a2m(const char * filename) {
         user_codes_push(0x803BAC68, 0);
         user_codes_push(0x803BAC6C, 0);
         user_codes_push(0x803BAC70, 0);
-    } else if (save_comment_next > 0) {
-        printf("WARNING: Save filename ignored because you are not using a nametag loader.\n");
     }
 
     fclose(src);
