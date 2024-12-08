@@ -498,15 +498,43 @@ void a2m_exec_objcopy(Directive * did, DirData * dat, unsigned long a2m_line) {
     if (dat->asm_pid == -1 || dat->asm_pid == 0) return;
     if (dat->asm_out == NULL) return;
 
-    int status;
+    int status = 0;
 
+    // Check the assembler result.
     waitpid(dat->asm_pid, &status, 0);
-
     if (status) {
         // @TODO Actually error out.
         printf("as failed, code %d\n", status);
         error(ERR_AS_FAILURE, a2m_line, NULL);
-    } else {
+        return;
+    }
+
+    // Test for unresolved symbols.
+    // The only way I see to do this is to attempt to extract .text by name.
+    {
+        pid_t obj_pid = fork();
+        char * obj_out = append_to_cwd("/a.obj");
+
+        if (obj_pid == 0) {
+            execlp(EXEC_OBJCOPY, EXEC_OBJCOPY,
+                    "-j", ".text", dat->asm_out, obj_out,
+                    (const char *)NULL);
+            exit(1); // If we got here, exec failed.
+        }
+
+        if (obj_pid > 0) {
+            // Read output from objcopy.
+            waitpid(obj_pid, &status, 0);
+            if (status) {
+                printf("Unresolved symbol check failed, code %d, see above\n", status);
+                error(ERR_AS_FAILURE, a2m_line, NULL);
+                return;
+            }
+        }
+    }
+
+    // Extract the code from the intermediate.
+    {
         pid_t obj_pid = fork();
         char * obj_out = append_to_cwd("/a.obj");
 
@@ -522,6 +550,7 @@ void a2m_exec_objcopy(Directive * did, DirData * dat, unsigned long a2m_line) {
             waitpid(obj_pid, &status, 0);
             if (status) {
                 printf("objcopy failed, code %d\n", status);
+                error(ERR_AS_FAILURE, a2m_line, NULL);
             } else {
                 int obj_out_handle = open(obj_out, O_RDONLY);
                 if (obj_out_handle == -1) {
